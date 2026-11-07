@@ -156,10 +156,11 @@ class ResearcherAgent:
 
         logger.info("Persisting %d research findings for report %s...", len(prepared_rows), report_id)
         persisted = []
-        for row in prepared_rows:
+        for i, row in enumerate(prepared_rows):
             res = self.client.post("research_findings", row)
-            if res:
-                persisted.append(res[0])
+            if not res or not isinstance(res, list) or len(res) == 0 or not res[0].get("id"):
+                raise RuntimeError(f"Failed to persist research finding [{i}]: {row.get('statement')}")
+            persisted.append(res[0])
         return persisted
 
     def record_activity(
@@ -182,7 +183,9 @@ class ResearcherAgent:
             "metadata": metadata or {},
         }
         res = self.client.post("activities", payload)
-        return res[0] if res else {}
+        if not res or not isinstance(res, list) or len(res) == 0 or not res[0].get("id"):
+            raise RuntimeError(f"Failed to record activity for company {company_id}")
+        return res[0]
 
     def complete_task(self, task_id: str) -> Dict[str, Any]:
         """
@@ -191,6 +194,12 @@ class ResearcherAgent:
         """
         logger.info("Completing task %s...", task_id)
         res = self.client.patch("tasks", {"status": "completed"}, params={"id": f"eq.{task_id}"})
-        if not res:
+        if not res or not isinstance(res, list) or len(res) == 0:
             raise RuntimeError(f"Failed to complete task {task_id}")
-        return res[0]
+        completed = res[0]
+        if completed.get("status") != "completed" or not completed.get("completed_at"):
+            raise RuntimeError(
+                f"Task completion could not be verified for task {task_id}: "
+                f"status={completed.get('status')}, completed_at={completed.get('completed_at')}"
+            )
+        return completed

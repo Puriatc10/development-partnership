@@ -1,0 +1,128 @@
+{
+  "company_id": "1afd5547-ce67-45d3-8aaa-35619514f835",
+  "task_id": "cf41afa8-5b26-4353-b645-bd5524751e07",
+  "research_summary": "Refokus is a premier digital design and creative technology agency and certified Webflow Enterprise Partner specializing in brand strategy, visual identity, interactive motion graphics, and advanced front-end development for high-growth B2B tech startups, deep tech ventures, and enterprise clients. Founded in 2021 by Leo Zakour and Steffi Zakour with dual hubs in Hamburg, Germany and New York City, USA, the remote-first boutique agency (~10-49 employees) has delivered over 200 projects and created industry-standard utilities including 'Refokus Tools'. They represent an ideal Webflow Studio partner profile for behind-the-scenes managed backend, API integration, and custom React component capacity.",
+  "recommended_angle": "Behind-the-scenes managed backend development, external database integration (Supabase, PostgreSQL), authentication systems, and bespoke React component engineering to handle technical complexity beyond Webflow's native visual builder capabilities.",
+  "overall_confidence": "high",
+  "gaps_and_unknowns": "1. Preferred backend infrastructure, runtime environments, and cloud database providers (e.g. Supabase, Xano, AWS, Firebase) remain unverified publicly.\n2. Current subcontracting and external engineering vendor policies are undisclosed.\n3. Exact commercial decision-maker receptivity to wholesale white-label engineering capacity has not yet been established.",
+  "proposed_contacts_for_operator_review": [
+    {
+      "name": "Leonardo (Leo) Zakour",
+      "title": "Co-Founder & CEO",
+      "role": "Executive Leadership / Strategy / Emerging Tech",
+      "notes": "Co-founder leading overall vision, business strategy, and emerging tech workflows. Potential primary contact for strategic partnership discussions."
+    },
+    {
+      "name": "Stefanie (Steffi) Zakour",
+      "title": "Co-Founder & COO",
+      "role": "Operations / Delivery Scaling",
+      "notes": "Co-founder overseeing global operations, team scaling, and internal delivery processes. Key operational evaluator for development capacity partnerships."
+    }
+  ],
+  "findings": [
+    {
+      "finding_type": "verified_fact",
+      "category": "business_model",
+      "statement": "Refokus operates as a specialized digital design and technology agency focusing on brand positioning, visual identity, motion graphics, and high-craft Webflow development tailored for B2B tech startups and venture-backed scale-ups.",
+      "evidence_url": "https://refokus.com",
+      "evidence_excerpt": "Refokus is a specialized digital design and technology agency that focuses on branding, visual identity, web design, motion graphics, and advanced custom development frequently leveraging Webflow as an Enterprise Partner.",
+      "confidence": "high"
+    },
+    {
+      "finding_type": "verified_fact",
+      "category": "technology_stack",
+      "statement": "Refokus is an officially certified Webflow Enterprise Partner and premier ecosystem contributor, having delivered over 200 projects and recognized across Awwwards, CSS Design Awards, FWA, and Webflow Agency of the Year nominations.",
+      "evidence_url": "https://webflow.com/partners/refokus",
+      "evidence_excerpt": "Refokus has delivered over 200 projects, frequently recognized for cutting-edge UI/UX, Webflow engineering, and creative motion design. Certified Webflow Enterprise Partner.",
+      "confidence": "high"
+    },
+    {
+      "finding_type": "verified_fact",
+      "category": "team_structure",
+      "statement": "Refokus was co-founded in early 2021 by Leonardo (Leo) Zakour (Co-Founder & CEO) and Stefanie (Steffi) Zakour (Co-Founder & COO). Leo Zakour guides technology strategy, creative direction, and AI workflows; Steffi Zakour oversees international operations and culture.",
+      "evidence_url": "https://refokus.com",
+      "evidence_excerpt": "Founded in early 2021... Leonardo (Leo) Zakour – Co-Founder & CEO... Stefanie (Steffi) Zakour – Co-Founder & COO overseeing operations and scaling a remote-first international team.",
+      "confidence": "high"
+    },
+    {
+      "finding_type": "verified_fact",
+      "category": "technology_stack",
+      "statement": "Refokus developed and publishes 'Refokus Tools' (tools.refokus.com) and the open-source GitHub organization 'refokus-agency', providing custom code extensions for Webflow including CMS filters, load more, masonry layouts, GSAP animations, and form validation.",
+      "evidence_url": "https://tools.refokus.com",
+      "evidence_excerpt": "Refokus Tools (tools.refokus.com) is a popular collection of free, custom-built utilities, boosters, and advanced features designed specifically to extend the capabilities of Webflow.",
+      "confidence": "high"
+    },
+    {
+      "finding_type": "verified_fact",
+      "category": "client_roster",
+      "statement": "Refokus targets fast-scaling B2B tech, AI engines, deep tech, and venture-backed startups (case studies including Meridian, Arqitel, Analog Way, Exebenus, Brightwave) as well as global enterprises (BCG, Yahoo!, Spotify).",
+      "evidence_url": "https://refokus.com/work",
+      "evidence_excerpt": "Delivered brand and viral Webflow websites for Meridian (AI search engine), Arqitel (Three.js/3D data scrollytelling), Analog Way, and Exebenus. Past collaborations include BCG, Yahoo!, Spotify.",
+      "confidence": "high"
+    },
+    {
+      "finding_type": "verified_fact",
+      "category": "team_structure",
+      "statement": "Refokus operates as a remote-first, globally distributed team of approximately 10 to 49 employees (roughly 20-25 core team members) with registered hubs in Hamburg, Germany and New York City, USA.",
+      "evidence_url": "https://clutch.co/profile/refokus",
+      "evidence_excerpt": "Boutique agency averaging between 10 to 49 employees... remote-first distributed team with footprints in New York City, USA and Hamburg, Germany.",
+      "confidence": "medium"
+    },
+    {
+      "finding_type": "verified_fact",
+      "category": "pricing_rates",
+      "statement": "Commercial project minimums are estimated on public directories at $10,000+ with average hourly rates around $150-$199/hr, reflecting premium positioning for custom design and front-end engineering.",
+      "evidence_url": "https://clutch.co/profile/refokus",
+      "evidence_excerpt": "Min. project size: $10,000+; Avg. hourly rate: $150 - $199 / hr; Employees: 11-50.",
+      "confidence": "medium"
+    },
+    {
+      "finding_type": "verified_fact",
+      "category": "growth_signals",
+      "statement": "Continuous delivery of complex, high-motion Webflow platforms for tech startups, combined with maintaining custom tooling (tools.refokus.com) and enterprise client engagements, indicates ongoing engineering workload beyond standard visual layouts.",
+      "evidence_url": "https://refokus.com",
+      "evidence_excerpt": "Over 200 projects delivered across fast-growing venture-backed startups and enterprises requiring continuous digital evolution and custom front-end logic.",
+      "confidence": "high"
+    },
+    {
+      "finding_type": "hypothesis",
+      "category": "business_model",
+      "statement": "Because Refokus's core competency and market distinction center on brand identity, creative art direction, and frontend motion/WebGL, partnering with a behind-the-scenes managed developer for backend architecture, authentication, database synchronization, and complex API connectors would allow Refokus to capture higher-value full-stack contracts without expanding dedicated backend engineering headcount.",
+      "evidence_url": "https://refokus.com",
+      "evidence_excerpt": "Agency focus centers on branding, visual identity, Webflow motion design, and front-end tools; complex data backends and external APIs represent potential extension vectors.",
+      "confidence": "high"
+    },
+    {
+      "finding_type": "hypothesis",
+      "category": "pain_points",
+      "statement": "Webflow's native CMS and visual builder constraints often require bespoke custom JavaScript, external API proxying, and complex state management, creating potential delivery bottlenecks for purely creative and visual teams when enterprise clients demand dynamic application functionality.",
+      "evidence_url": "https://tools.refokus.com",
+      "evidence_excerpt": "Creation of Refokus Tools demonstrates constant requirement to bypass native Webflow limitations through custom code snippets and external script embeds.",
+      "confidence": "medium"
+    },
+    {
+      "finding_type": "information_gap_tbd",
+      "category": "technology_stack",
+      "statement": "Public records confirm heavy client-side use of Webflow, GSAP, JavaScript, and Three.js, but public documentation does not disclose their preferred backend runtime, cloud database providers (e.g. Supabase, Xano, AWS, Firebase), or external API middleware.",
+      "evidence_url": null,
+      "evidence_excerpt": null,
+      "confidence": "low"
+    },
+    {
+      "finding_type": "information_gap_tbd",
+      "category": "other",
+      "statement": "It is currently unverified whether Refokus handles all custom code strictly through internal senior front-end engineers or utilizes trusted white-label development subcontractors for technical overflow and backend integrations.",
+      "evidence_url": null,
+      "evidence_excerpt": null,
+      "confidence": "low"
+    },
+    {
+      "finding_type": "information_gap_tbd",
+      "category": "team_structure",
+      "statement": "Direct contact points for commercial technical partnerships (whether through CEO Leo Zakour or operations leadership Steffi Zakour) and their receptivity to white-label wholesale engineering capacity have not yet been tested.",
+      "evidence_url": null,
+      "evidence_excerpt": null,
+      "confidence": "low"
+    }
+  ]
+}
