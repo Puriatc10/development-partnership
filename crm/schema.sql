@@ -740,12 +740,22 @@ CREATE TABLE tasks (
     status task_status_type NOT NULL DEFAULT 'pending',
     assigned_actor_type actor_type NOT NULL,
     assigned_actor_identity TEXT NOT NULL,
+    campaign_id UUID REFERENCES outreach_campaigns(id) ON DELETE SET NULL,
     company_id UUID REFERENCES companies(id) ON DELETE CASCADE,
-    contact_id UUID REFERENCES contacts(id) ON DELETE CASCADE,
+    contact_id UUID,
     due_date TIMESTAMPTZ,
     completed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+
+    -- Composite FK: If contact_id is specified, must belong to designated company_id!
+    CONSTRAINT fk_tasks_contact_company FOREIGN KEY (contact_id, company_id) 
+        REFERENCES contacts(id, company_id) ON DELETE CASCADE,
+
+    -- Integrity Rule: A task cannot reference a contact without referencing its company
+    CONSTRAINT chk_tasks_contact_requires_company CHECK (
+        contact_id IS NULL OR company_id IS NOT NULL
+    )
 );
 
 COMMENT ON TABLE tasks IS 'Actionable tasks coordinating human operators and Hermes subagents.';
@@ -895,10 +905,17 @@ CREATE TRIGGER trg_sync_company_suppression
 
 -- -----------------------------------------------------------------------------
 -- Function: is_identifier_suppressed
--- Narrowly scoped boolean lookup verifying if a specific identifier is suppressed.
--- Does NOT expose the underlying suppression records, reasons, or sources to callers.
+-- Hardened boolean lookup verifying if a specific identifier is suppressed.
+-- Does NOT expose underlying suppression records, reasons, or sources to callers.
 -- Returns TRUE if suppressed, FALSE otherwise.
--- Security Mode: SECURITY DEFINER with fixed safe search_path = public.
+-- Security Guarantees:
+-- 1. Authentication required (unauthenticated calls raise exception).
+-- 2. Human operators have operational access for legitimate verification.
+-- 3. Agents must have an active task and queried identifier must be demonstrably
+--    within that task's authorized company/contact scope; out-of-scope queries
+--    are rejected with exceptions to prevent identifier enumeration.
+-- 4. Identifier normalization matches suppression_registry (lower/trim).
+-- 5. Safe search_path (pg_catalog, public) and schema-qualified relations.
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION is_identifier_suppressed(
     p_target_type suppression_target_type,
@@ -906,18 +923,119 @@ CREATE OR REPLACE FUNCTION is_identifier_suppressed(
 )
 RETURNS BOOLEAN
 SECURITY DEFINER
-SET search_path = public
+SET search_path = pg_catalog, public
 AS $$
+DECLARE
+    v_clean_id TEXT;
+    v_agent_id TEXT;
+    v_in_scope BOOLEAN := FALSE;
 BEGIN
-    IF p_identifier IS NULL OR TRIM(p_identifier) = '' THEN
-        RETURN FALSE;
+    -- 1. Unauthenticated or anonymous callers are strictly blocked
+    IF auth.uid() IS NULL THEN
+        RAISE EXCEPTION 'Security Policy Violation: Authentication required for suppression lookup.';
     END IF;
 
-    RETURN EXISTS (
-        SELECT 1 FROM suppression_registry
-        WHERE target_type = p_target_type
-          AND identifier = LOWER(TRIM(p_identifier))
-    );
+    -- Normalize identifier consistently with suppression registry
+    v_clean_id := LOWER(TRIM(COALESCE(p_identifier, '')));
+
+    -- 2. Human operators: preserve legitimate operational verification workflow
+    IF is_human_operator() THEN
+        IF v_clean_id = '' THEN
+            RETURN FALSE;
+        END IF;
+
+        RETURN EXISTS (
+            SELECT 1 FROM public.suppression_registry
+            WHERE target_type = p_target_type
+              AND identifier = v_clean_id
+        );
+    END IF;
+
+    -- 3. Agent callers: strict task-scoped authorization to prevent registry enumeration
+    IF is_agent() THEN
+        v_agent_id := current_agent_identity();
+        IF v_agent_id IS NULL OR TRIM(v_agent_id) = '' THEN
+            RAISE EXCEPTION 'Security Policy Violation: Valid authenticated agent identity required for suppression lookup.';
+        END IF;
+
+        IF v_clean_id = '' THEN
+            RETURN FALSE;
+        END IF;
+
+        -- Verify that the queried identifier is demonstrably within an active task assigned to this agent
+        IF p_target_type = 'email' THEN
+            SELECT EXISTS (
+                SELECT 1 
+                FROM public.tasks t
+                JOIN public.contacts c ON c.company_id = t.company_id 
+                                      AND (t.contact_id IS NULL OR t.contact_id = c.id)
+                WHERE t.assigned_actor_type = 'agent'
+                  AND t.assigned_actor_identity = v_agent_id
+                  AND t.status IN ('pending', 'in_progress')
+                  AND LOWER(TRIM(c.email)) = v_clean_id
+            ) INTO v_in_scope;
+
+        ELSIF p_target_type = 'domain' THEN
+            SELECT EXISTS (
+                SELECT 1 
+                FROM public.tasks t
+                WHERE t.assigned_actor_type = 'agent'
+                  AND t.assigned_actor_identity = v_agent_id
+                  AND t.status IN ('pending', 'in_progress')
+                  AND (
+                      EXISTS (
+                          SELECT 1 FROM public.companies comp 
+                          WHERE comp.id = t.company_id 
+                            AND LOWER(TRIM(comp.primary_domain)) = v_clean_id
+                      )
+                      OR EXISTS (
+                          SELECT 1 FROM public.company_domains cd 
+                          WHERE cd.company_id = t.company_id 
+                            AND LOWER(TRIM(cd.domain)) = v_clean_id
+                      )
+                  )
+            ) INTO v_in_scope;
+
+        ELSIF p_target_type = 'linkedin' THEN
+            SELECT EXISTS (
+                SELECT 1 
+                FROM public.tasks t
+                JOIN public.contacts c ON c.company_id = t.company_id 
+                                      AND (t.contact_id IS NULL OR t.contact_id = c.id)
+                WHERE t.assigned_actor_type = 'agent'
+                  AND t.assigned_actor_identity = v_agent_id
+                  AND t.status IN ('pending', 'in_progress')
+                  AND LOWER(TRIM(c.linkedin_url)) = v_clean_id
+            ) INTO v_in_scope;
+
+        ELSIF p_target_type = 'phone' THEN
+            SELECT EXISTS (
+                SELECT 1 
+                FROM public.tasks t
+                JOIN public.contacts c ON c.company_id = t.company_id 
+                                      AND (t.contact_id IS NULL OR t.contact_id = c.id)
+                WHERE t.assigned_actor_type = 'agent'
+                  AND t.assigned_actor_identity = v_agent_id
+                  AND t.status IN ('pending', 'in_progress')
+                  AND LOWER(TRIM(c.phone)) = v_clean_id
+            ) INTO v_in_scope;
+        ELSE
+            v_in_scope := FALSE;
+        END IF;
+
+        IF NOT v_in_scope THEN
+            RAISE EXCEPTION 'Security Policy Violation: Queried % identifier "%" is outside the authorized scope of active tasks for agent %.', p_target_type, p_identifier, v_agent_id;
+        END IF;
+
+        RETURN EXISTS (
+            SELECT 1 FROM public.suppression_registry
+            WHERE target_type = p_target_type
+              AND identifier = v_clean_id
+        );
+    END IF;
+
+    -- 4. Reject any caller that is neither an authenticated human operator nor an agent
+    RAISE EXCEPTION 'Security Policy Violation: Caller lacks authorization for suppression lookup.';
 END;
 $$ LANGUAGE plpgsql STABLE;
 
@@ -1047,10 +1165,13 @@ BEGIN
         JOIN companies comp ON comp.id = c.company_id
         WHERE c.id = NEW.contact_id;
 
-        -- Check permanent multi-channel suppression via trusted helper
-        IF is_identifier_suppressed('email', contact_rec.email)
-           OR is_identifier_suppressed('domain', contact_rec.domain)
-           OR is_identifier_suppressed('linkedin', contact_rec.linkedin_url) THEN
+        -- Check permanent multi-channel suppression directly against registry (trusted database gate)
+        IF EXISTS (
+            SELECT 1 FROM suppression_registry sr
+            WHERE (sr.target_type = 'email' AND sr.identifier = contact_rec.email)
+               OR (sr.target_type = 'domain' AND sr.identifier = contact_rec.domain)
+               OR (sr.target_type = 'linkedin' AND sr.identifier = contact_rec.linkedin_url)
+        ) THEN
             RAISE EXCEPTION 'Suppression Violation: Recipient or domain is on the permanent suppression list.';
         END IF;
     END IF;
@@ -1244,6 +1365,10 @@ BEGIN
             RAISE EXCEPTION 'Security Policy Violation: Agents cannot reassign tasks or alter task actor assignment.';
         END IF;
 
+        IF NEW.campaign_id IS DISTINCT FROM OLD.campaign_id THEN
+            RAISE EXCEPTION 'Security Policy Violation: Agents cannot alter task campaign_id scope.';
+        END IF;
+
         IF NEW.company_id IS DISTINCT FROM OLD.company_id THEN
             RAISE EXCEPTION 'Security Policy Violation: Agents cannot alter task company_id scope.';
         END IF;
@@ -1398,6 +1523,8 @@ CREATE INDEX idx_activities_type ON activities(activity_type);
 
 CREATE INDEX idx_tasks_status_assigned ON tasks(status, assigned_actor_type, assigned_actor_identity);
 CREATE INDEX idx_tasks_company ON tasks(company_id) WHERE company_id IS NOT NULL;
+CREATE INDEX idx_tasks_contact ON tasks(contact_id) WHERE contact_id IS NOT NULL;
+CREATE INDEX idx_tasks_campaign ON tasks(campaign_id) WHERE campaign_id IS NOT NULL;
 
 CREATE INDEX idx_audit_logs_record ON audit_logs(table_name, record_id);
 CREATE INDEX idx_audit_logs_actor ON audit_logs(actor_type, actor_identity);
@@ -1537,12 +1664,19 @@ CREATE POLICY agent_select_contacts ON contacts FOR SELECT TO authenticated
         )
     );
 
--- Campaign Access: Only active campaigns accessible to Drafter agents
+-- Campaign Access: Only active campaigns explicitly associated with an active task assigned to the Drafter
 CREATE POLICY agent_select_campaigns ON outreach_campaigns FOR SELECT TO authenticated 
     USING (
         is_agent() AND 
         is_agent_type('drafter') AND 
-        is_active = TRUE
+        is_active = TRUE AND
+        EXISTS (
+            SELECT 1 FROM tasks t
+            WHERE t.assigned_actor_type = 'agent'
+              AND t.assigned_actor_identity = current_agent_identity()
+              AND t.campaign_id = outreach_campaigns.id
+              AND t.status IN ('pending', 'in_progress')
+        )
     );
 
 -- Research Subagent Scoped Permissions (Task-scoped to assigned company)
@@ -1673,6 +1807,7 @@ CREATE POLICY agent_insert_outreach_messages ON outreach_messages FOR INSERT TO 
               AND t.assigned_actor_identity = current_agent_identity()
               AND t.company_id = outreach_messages.company_id
               AND (t.contact_id IS NULL OR t.contact_id = outreach_messages.contact_id)
+              AND (t.campaign_id IS NULL OR t.campaign_id = outreach_messages.campaign_id)
               AND t.status IN ('pending', 'in_progress')
         )
     );
@@ -1692,7 +1827,7 @@ CREATE POLICY agent_select_outreach_messages ON outreach_messages FOR SELECT TO 
         )
     );
 
--- Activity Logging for Agents (Task-scoped to assigned company & contact)
+-- Activity Logging for Agents (Strictly task-scoped to assigned company & contact)
 CREATE POLICY agent_insert_activities ON activities FOR INSERT TO authenticated 
     WITH CHECK (
         is_agent() AND 
@@ -1703,7 +1838,7 @@ CREATE POLICY agent_insert_activities ON activities FOR INSERT TO authenticated
             WHERE t.assigned_actor_type = 'agent' 
               AND t.assigned_actor_identity = current_agent_identity()
               AND t.company_id = activities.company_id
-              AND (t.contact_id IS NULL OR activities.contact_id IS NULL OR t.contact_id = activities.contact_id)
+              AND (t.contact_id IS NULL OR t.contact_id = activities.contact_id)
               AND t.status IN ('pending', 'in_progress')
         )
     );
@@ -1749,6 +1884,9 @@ CREATE POLICY agent_update_assigned_tasks ON tasks FOR UPDATE TO authenticated
 -- Revoke default wide privileges
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM anon, authenticated, public;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM anon, authenticated, public;
+
+-- Explicitly revoke on is_identifier_suppressed from PUBLIC and anon
+REVOKE ALL ON FUNCTION is_identifier_suppressed(suppression_target_type, TEXT) FROM PUBLIC, anon;
 
 -- Grant EXECUTE on trusted security and calculation helpers
 GRANT EXECUTE ON FUNCTION is_human_operator, is_admin_operator, is_agent, is_agent_type, current_agent_identity, current_actor_role, add_business_days, is_identifier_suppressed TO authenticated;
