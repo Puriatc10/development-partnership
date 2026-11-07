@@ -1419,14 +1419,15 @@ CREATE TRIGGER trg_enforce_task_governance
     EXECUTE FUNCTION fn_enforce_task_governance();
 
 -- -----------------------------------------------------------------------------
--- Trigger Function: Trusted Database-Side Audit Log Capture
--- Automatically records critical state changes into the immutable audit_logs ledger.
--- Security Mode: SECURITY DEFINER with set search_path = public.
+-- Trigger Function: Capture Technical Audit Trail
+-- Records immutable technical audit logs across sensitive state mutations.
+-- Security Mode: SECURITY DEFINER with fixed safe search_path = pg_catalog, public.
+-- Explicitly schema-qualifies relation references to prevent search-path hijack.
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION fn_audit_log_capture()
 RETURNS TRIGGER 
 SECURITY DEFINER
-SET search_path = public
+SET search_path = pg_catalog, public
 AS $$
 DECLARE
     v_action TEXT;
@@ -1449,18 +1450,18 @@ BEGIN
     END IF;
 
     -- Determine actor attribution
-    IF is_human_operator() THEN
+    IF public.is_human_operator() THEN
         v_actor_type := 'human';
         v_actor_id := COALESCE(auth.uid()::TEXT, 'unknown_human');
-    ELSIF is_agent() THEN
+    ELSIF public.is_agent() THEN
         v_actor_type := 'agent';
-        v_actor_id := COALESCE(current_agent_identity(), 'unknown_agent');
+        v_actor_id := COALESCE(public.current_agent_identity(), 'unknown_agent');
     ELSE
         v_actor_type := 'system';
         v_actor_id := 'system_trigger';
     END IF;
 
-    INSERT INTO audit_logs (
+    INSERT INTO public.audit_logs (
         table_name, record_id, action, actor_type, actor_identity, old_values, new_values, metadata
     ) VALUES (
         TG_TABLE_NAME,
@@ -1470,7 +1471,7 @@ BEGIN
         v_actor_id,
         CASE WHEN TG_OP IN ('UPDATE', 'DELETE') THEN to_jsonb(OLD) ELSE NULL END,
         CASE WHEN TG_OP IN ('INSERT', 'UPDATE') THEN to_jsonb(NEW) ELSE NULL END,
-        jsonb_build_object('client_role', current_actor_role(), 'occurred_at', clock_timestamp())
+        jsonb_build_object('client_role', public.current_actor_role(), 'occurred_at', clock_timestamp())
     );
 
     RETURN NULL;
@@ -1650,7 +1651,7 @@ CREATE POLICY agent_select_company_domains ON company_domains FOR SELECT TO auth
 -- Note on suppression_registry: Broad agent SELECT is removed to prevent enumeration.
 -- Subagents must use trusted helper function is_identifier_suppressed().
 
--- Scoped Contact Access: Only non-opted-out contacts for companies/contacts assigned in tasks
+-- Scoped Contact Access: Only non-opted-out contacts within active assigned task scope
 CREATE POLICY agent_select_contacts ON contacts FOR SELECT TO authenticated 
     USING (
         is_agent() AND 
@@ -1660,7 +1661,8 @@ CREATE POLICY agent_select_contacts ON contacts FOR SELECT TO authenticated
             WHERE t.assigned_actor_type = 'agent' 
               AND t.assigned_actor_identity = current_agent_identity()
               AND t.status IN ('pending', 'in_progress')
-              AND (t.company_id = contacts.company_id OR t.contact_id = contacts.id)
+              AND t.company_id = contacts.company_id
+              AND (t.contact_id IS NULL OR t.contact_id = contacts.id)
         )
     );
 
@@ -1815,15 +1817,15 @@ CREATE POLICY agent_insert_outreach_messages ON outreach_messages FOR INSERT TO 
 CREATE POLICY agent_select_outreach_messages ON outreach_messages FOR SELECT TO authenticated 
     USING (
         is_agent() AND 
-        is_agent_type('drafter') AND (
-            drafted_by_agent_identity = current_agent_identity() OR 
-            EXISTS (
-                SELECT 1 FROM tasks t 
-                WHERE t.assigned_actor_type = 'agent' 
-                  AND t.assigned_actor_identity = current_agent_identity()
-                  AND t.company_id = outreach_messages.company_id
-                  AND t.status IN ('pending', 'in_progress')
-            )
+        is_agent_type('drafter') AND 
+        EXISTS (
+            SELECT 1 FROM tasks t 
+            WHERE t.assigned_actor_type = 'agent' 
+              AND t.assigned_actor_identity = current_agent_identity()
+              AND t.status IN ('pending', 'in_progress')
+              AND t.company_id = outreach_messages.company_id
+              AND (t.contact_id IS NULL OR t.contact_id = outreach_messages.contact_id)
+              AND (t.campaign_id IS NULL OR t.campaign_id = outreach_messages.campaign_id)
         )
     );
 
@@ -1845,15 +1847,14 @@ CREATE POLICY agent_insert_activities ON activities FOR INSERT TO authenticated
 
 CREATE POLICY agent_select_activities ON activities FOR SELECT TO authenticated 
     USING (
-        is_agent() AND (
-            (performed_by_actor_type = 'agent' AND performed_by_actor_identity = current_agent_identity()) OR
-            EXISTS (
-                SELECT 1 FROM tasks t 
-                WHERE t.assigned_actor_type = 'agent' 
-                  AND t.assigned_actor_identity = current_agent_identity()
-                  AND t.company_id = activities.company_id
-                  AND t.status IN ('pending', 'in_progress')
-            )
+        is_agent() AND 
+        EXISTS (
+            SELECT 1 FROM tasks t 
+            WHERE t.assigned_actor_type = 'agent' 
+              AND t.assigned_actor_identity = current_agent_identity()
+              AND t.status IN ('pending', 'in_progress')
+              AND t.company_id = activities.company_id
+              AND (t.contact_id IS NULL OR t.contact_id = activities.contact_id)
         )
     );
 
@@ -1885,7 +1886,8 @@ CREATE POLICY agent_update_assigned_tasks ON tasks FOR UPDATE TO authenticated
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM anon, authenticated, public;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM anon, authenticated, public;
 
--- Explicitly revoke on is_identifier_suppressed from PUBLIC and anon
+-- Explicitly revoke execution on internal trigger functions and private helpers
+REVOKE ALL ON FUNCTION fn_audit_log_capture() FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION is_identifier_suppressed(suppression_target_type, TEXT) FROM PUBLIC, anon;
 
 -- Grant EXECUTE on trusted security and calculation helpers
