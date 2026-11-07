@@ -70,6 +70,16 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql STABLE;
 
+CREATE OR REPLACE FUNCTION is_admin_operator()
+RETURNS BOOLEAN AS $$
+BEGIN
+    RETURN COALESCE(
+        (auth.jwt() -> 'app_metadata' ->> 'user_role') IN ('admin', 'founder'),
+        FALSE
+    );
+END;
+$$ LANGUAGE plpgsql STABLE;
+
 CREATE OR REPLACE FUNCTION is_agent()
 RETURNS BOOLEAN AS $$
 BEGIN
@@ -541,8 +551,8 @@ CREATE TABLE lead_qualifications (
     ),
     CONSTRAINT chk_lead_qual_score_range CHECK (overall_score >= 0 AND overall_score <= 100),
     CONSTRAINT chk_lead_qual_review_human_gate CHECK (
-        review_status != 'approved' OR 
-        (reviewed_by_human_id IS NOT NULL AND reviewed_at IS NOT NULL)
+        (review_status != 'approved' AND reviewed_by_human_id IS NULL AND reviewed_at IS NULL) OR 
+        (review_status = 'approved' AND reviewed_by_human_id IS NOT NULL AND reviewed_at IS NOT NULL)
     )
 );
 
@@ -617,15 +627,15 @@ CREATE TABLE outreach_messages (
         proposed_commercial_model != 'strategic_revenue_sharing'
     ),
 
-    -- Strict Human Gate: Messages can NEVER be queued, sending, or sent without human sign-off!
+    -- Strict Human Gate: Messages can NEVER enter dispatch or downstream delivery status without human sign-off!
     CONSTRAINT chk_outreach_mandatory_human_gate CHECK (
-        sending_status NOT IN ('queued', 'sending', 'sent') OR 
+        sending_status NOT IN ('queued', 'sending', 'sent', 'delivered', 'opened', 'replied', 'bounced', 'failed') OR 
         (approval_status = 'approved' AND approved_by_human_id IS NOT NULL AND approved_at IS NOT NULL)
     ),
 
     CONSTRAINT chk_outreach_override_audit CHECK (
-        is_admin_override = FALSE OR 
-        (override_reason IS NOT NULL AND override_by_human_id IS NOT NULL)
+        (is_admin_override = FALSE AND override_reason IS NULL AND override_by_human_id IS NULL) OR 
+        (is_admin_override = TRUE AND override_reason IS NOT NULL AND TRIM(override_reason) != '' AND override_by_human_id IS NOT NULL)
     ),
 
     CONSTRAINT chk_outreach_sequence_step CHECK (sequence_step >= 1)
@@ -897,28 +907,46 @@ CREATE OR REPLACE FUNCTION fn_enforce_outreach_human_approval()
 RETURNS TRIGGER AS $$
 DECLARE
     contact_rec RECORD;
-    company_dom TEXT;
 BEGIN
     -- Block revenue sharing in cold outreach drafts
     IF NEW.proposed_commercial_model = 'strategic_revenue_sharing' THEN
         RAISE EXCEPTION 'Business Rule Violation: Strategic Revenue Sharing is strictly prohibited in outreach correspondence.';
     END IF;
 
-    -- Invalidation on material edits: If an approved message has its content altered, reset to draft!
+    -- Invalidation on material edits: If an approved message has its content, recipient, targeting, commercial meaning, or personalization altered, reset to draft!
     IF OLD IS NOT NULL AND OLD.approval_status = 'approved' AND NEW.approval_status = 'approved' THEN
         IF (
             NEW.body IS DISTINCT FROM OLD.body OR
             NEW.subject IS DISTINCT FROM OLD.subject OR
             NEW.channel IS DISTINCT FROM OLD.channel OR
+            NEW.company_id IS DISTINCT FROM OLD.company_id OR
             NEW.contact_id IS DISTINCT FROM OLD.contact_id OR
-            NEW.proposed_commercial_model IS DISTINCT FROM OLD.proposed_commercial_model OR
-            NEW.personalization_rationale IS DISTINCT FROM OLD.personalization_rationale
+            NEW.campaign_id IS DISTINCT FROM OLD.campaign_id OR
+            NEW.sequence_step IS DISTINCT FROM OLD.sequence_step OR
+            NEW.parent_message_id IS DISTINCT FROM OLD.parent_message_id OR
+            NEW.personalization_evidence_ids IS DISTINCT FROM OLD.personalization_evidence_ids OR
+            NEW.personalization_rationale IS DISTINCT FROM OLD.personalization_rationale OR
+            NEW.proposed_commercial_model IS DISTINCT FROM OLD.proposed_commercial_model
         ) THEN
-            -- Invalidate approval due to content modification
+            -- Invalidate approval due to material modification
             NEW.approval_status = 'draft';
             NEW.approved_by_human_id = NULL;
             NEW.approved_at = NULL;
+            NEW.is_admin_override = FALSE;
+            NEW.override_reason = NULL;
+            NEW.override_by_human_id = NULL;
             NEW.sending_status = 'draft';
+        END IF;
+    END IF;
+
+    -- Protect approval metadata against arbitrary modification after approval
+    IF OLD IS NOT NULL AND OLD.approval_status = 'approved' AND NEW.approval_status = 'approved' THEN
+        IF NEW.approved_by_human_id IS DISTINCT FROM OLD.approved_by_human_id OR
+           NEW.approved_at IS DISTINCT FROM OLD.approved_at OR
+           NEW.is_admin_override IS DISTINCT FROM OLD.is_admin_override OR
+           NEW.override_reason IS DISTINCT FROM OLD.override_reason OR
+           NEW.override_by_human_id IS DISTINCT FROM OLD.override_by_human_id THEN
+            RAISE EXCEPTION 'Security Policy Violation: Cannot alter approval identity, timestamps, or override metadata on an already approved message.';
         END IF;
     END IF;
 
@@ -936,28 +964,52 @@ BEGIN
             RAISE EXCEPTION 'Security Policy Violation: Approval requires an authenticated session with non-null auth.uid().';
         END IF;
 
-        -- Check identity matching or explicit override
-        IF NEW.approved_by_human_id IS DISTINCT FROM auth.uid() THEN
-            IF NEW.is_admin_override = TRUE THEN
-                IF NEW.override_reason IS NULL OR NEW.override_by_human_id IS NULL THEN
-                    RAISE EXCEPTION 'Audit Violation: Admin override requires explicit override_reason and override_by_human_id.';
-                END IF;
-                IF NEW.override_by_human_id != auth.uid() THEN
-                    RAISE EXCEPTION 'Audit Violation: override_by_human_id must match authenticated user ID.';
-                END IF;
-            ELSE
+        -- Admin override check
+        IF NEW.is_admin_override = TRUE THEN
+            IF NOT is_admin_operator() THEN
+                RAISE EXCEPTION 'Security Policy Violation: Only authorized admin or founder roles can perform an administrative override.';
+            END IF;
+
+            IF NEW.override_reason IS NULL OR TRIM(NEW.override_reason) = '' THEN
+                RAISE EXCEPTION 'Audit Violation: Admin override requires a non-empty override_reason.';
+            END IF;
+
+            IF NEW.override_by_human_id IS NULL OR NEW.override_by_human_id != auth.uid() THEN
+                RAISE EXCEPTION 'Audit Violation: override_by_human_id must match authenticated admin user ID (%).', auth.uid();
+            END IF;
+
+            IF NEW.approved_by_human_id IS NULL THEN
+                RAISE EXCEPTION 'Audit Violation: approved_by_human_id must be specified when performing admin override.';
+            END IF;
+        ELSE
+            -- Standard Approval: approved_by_human_id must match auth.uid()
+            IF NEW.approved_by_human_id IS DISTINCT FROM auth.uid() THEN
                 RAISE EXCEPTION 'Security Policy Violation: approved_by_human_id (%) must match authenticated user (%).', NEW.approved_by_human_id, auth.uid();
             END IF;
+
+            -- Non-override approvals must not contain override metadata
+            NEW.override_reason = NULL;
+            NEW.override_by_human_id = NULL;
         END IF;
 
         -- Overwrite with trusted database timestamp
         NEW.approved_at = clock_timestamp();
     END IF;
 
-    -- Verify suppression state before allowing transition to queued or sending
-    IF NEW.sending_status IN ('queued', 'sending', 'sent') THEN
-        IF NEW.approval_status != 'approved' THEN
-            RAISE EXCEPTION 'Integrity Violation: Outreach message % cannot be dispatched without human approval.', NEW.id;
+    -- Reset approval fields if approval_status is not approved
+    IF NEW.approval_status != 'approved' THEN
+        NEW.approved_by_human_id = NULL;
+        NEW.approved_at = NULL;
+        NEW.is_admin_override = FALSE;
+        NEW.override_reason = NULL;
+        NEW.override_by_human_id = NULL;
+    END IF;
+
+    -- Verify dispatch authorization & suppression check:
+    -- Any status other than 'draft' or 'cancelled' implies dispatch or downstream event
+    IF NEW.sending_status IN ('queued', 'sending', 'sent', 'delivered', 'opened', 'replied', 'bounced', 'failed') THEN
+        IF NEW.approval_status != 'approved' OR NEW.approved_by_human_id IS NULL OR NEW.approved_at IS NULL THEN
+            RAISE EXCEPTION 'Integrity Violation: Outreach message % cannot enter dispatch or downstream status (%) without valid human approval.', NEW.id, NEW.sending_status;
         END IF;
 
         -- Fetch contact details and company domain
@@ -1042,9 +1094,10 @@ BEGIN
         END IF;
     END IF;
 
-    -- 3. Invalidate approval on material score modification
+    -- 3. Invalidate approval on material score, evidence, tier, or recommendation modification
     IF OLD IS NOT NULL AND OLD.review_status = 'approved' AND NEW.review_status = 'approved' THEN
         IF (
+            NEW.company_id IS DISTINCT FROM OLD.company_id OR
             NEW.overall_score IS DISTINCT FROM OLD.overall_score OR
             NEW.customer_flow_score IS DISTINCT FROM OLD.customer_flow_score OR
             NEW.development_demand_score IS DISTINCT FROM OLD.development_demand_score OR
@@ -1053,7 +1106,11 @@ BEGIN
             NEW.business_size_score IS DISTINCT FROM OLD.business_size_score OR
             NEW.decision_maker_accessibility_score IS DISTINCT FROM OLD.decision_maker_accessibility_score OR
             NEW.commercial_fit_score IS DISTINCT FROM OLD.commercial_fit_score OR
-            NEW.dimension_evidence IS DISTINCT FROM OLD.dimension_evidence
+            NEW.dimension_evidence IS DISTINCT FROM OLD.dimension_evidence OR
+            NEW.qualification_tier IS DISTINCT FROM OLD.qualification_tier OR
+            NEW.disqualification_reasons IS DISTINCT FROM OLD.disqualification_reasons OR
+            NEW.disqualification_notes IS DISTINCT FROM OLD.disqualification_notes OR
+            NEW.recommended_next_action IS DISTINCT FROM OLD.recommended_next_action
         ) THEN
             NEW.review_status = 'draft';
             NEW.reviewed_by_human_id = NULL;
@@ -1061,7 +1118,15 @@ BEGIN
         END IF;
     END IF;
 
-    -- 4. Enforce Human Gate on Approval
+    -- 4. Protect approval metadata against arbitrary modification after approval
+    IF OLD IS NOT NULL AND OLD.review_status = 'approved' AND NEW.review_status = 'approved' THEN
+        IF NEW.reviewed_by_human_id IS DISTINCT FROM OLD.reviewed_by_human_id OR
+           NEW.reviewed_at IS DISTINCT FROM OLD.reviewed_at THEN
+            RAISE EXCEPTION 'Security Policy Violation: Cannot alter reviewer identity or timestamp of an approved qualification.';
+        END IF;
+    END IF;
+
+    -- 5. Enforce Human Gate on Approval
     IF NEW.review_status = 'approved' AND (OLD IS NULL OR OLD.review_status != 'approved') THEN
         IF is_agent() THEN
             RAISE EXCEPTION 'Security Policy Violation: Agents are strictly prohibited from approving lead qualifications.';
@@ -1076,10 +1141,16 @@ BEGIN
         END IF;
 
         IF NEW.reviewed_by_human_id IS DISTINCT FROM auth.uid() THEN
-            RAISE EXCEPTION 'Security Policy Violation: reviewed_by_human_id must match authenticated operator ID.';
+            RAISE EXCEPTION 'Security Policy Violation: reviewed_by_human_id must match authenticated operator ID (%).', auth.uid();
         END IF;
 
         NEW.reviewed_at = clock_timestamp();
+    END IF;
+
+    -- Reset reviewer fields if review_status is not approved
+    IF NEW.review_status != 'approved' THEN
+        NEW.reviewed_by_human_id = NULL;
+        NEW.reviewed_at = NULL;
     END IF;
 
     RETURN NEW;
@@ -1313,70 +1384,181 @@ CREATE POLICY human_operator_select_audit_logs ON audit_logs FOR SELECT TO authe
 
 -- -----------------------------------------------------------------------------
 -- 6.3. Scoped Automated Agent Policies (Least Privilege Separation)
--- Verified via is_agent() and is_agent_type(). Unknown roles receive ZERO access.
+-- Verified via is_agent(), is_agent_type(), and task/author scoping.
+-- Broad USING (is_agent()) policies removed to prevent unrestricted CRM dumping.
+-- Unknown roles receive ZERO access.
 -- -----------------------------------------------------------------------------
 
--- Directory Read Access for Agents
+-- Directory Read Access for Agents (Active non-suppressed companies & domains only)
 CREATE POLICY agent_select_companies ON companies FOR SELECT TO authenticated 
-    USING (is_agent());
+    USING (is_agent() AND is_suppressed = FALSE);
 
 CREATE POLICY agent_select_company_domains ON company_domains FOR SELECT TO authenticated 
     USING (is_agent());
 
-CREATE POLICY agent_select_contacts ON contacts FOR SELECT TO authenticated 
-    USING (is_agent() AND is_opted_out = FALSE);
-
 CREATE POLICY agent_select_suppression ON suppression_registry FOR SELECT TO authenticated 
     USING (is_agent());
 
+-- Scoped Contact Access: Only non-opted-out contacts for companies/contacts assigned in tasks
+CREATE POLICY agent_select_contacts ON contacts FOR SELECT TO authenticated 
+    USING (
+        is_agent() AND 
+        is_opted_out = FALSE AND 
+        EXISTS (
+            SELECT 1 FROM tasks t 
+            WHERE t.assigned_actor_type = 'agent' 
+              AND t.assigned_actor_identity = current_agent_identity()
+              AND t.status IN ('pending', 'in_progress')
+              AND (t.company_id = contacts.company_id OR t.contact_id = contacts.id)
+        )
+    );
+
+-- Campaign Access: Only active campaigns accessible to Drafter agents
 CREATE POLICY agent_select_campaigns ON outreach_campaigns FOR SELECT TO authenticated 
-    USING (is_agent());
+    USING (
+        is_agent() AND 
+        is_agent_type('drafter') AND 
+        is_active = TRUE
+    );
 
 -- Research Subagent Scoped Permissions
 CREATE POLICY agent_insert_research_reports ON research_reports FOR INSERT TO authenticated 
-    WITH CHECK (is_agent() AND is_agent_type('researcher'));
+    WITH CHECK (
+        is_agent() AND 
+        is_agent_type('researcher') AND 
+        research_agent_identity = current_agent_identity()
+    );
 
 CREATE POLICY agent_select_research_reports ON research_reports FOR SELECT TO authenticated 
-    USING (is_agent());
+    USING (
+        is_agent() AND (
+            (is_agent_type('researcher') AND research_agent_identity = current_agent_identity()) OR
+            EXISTS (
+                SELECT 1 FROM tasks t 
+                WHERE t.assigned_actor_type = 'agent' 
+                  AND t.assigned_actor_identity = current_agent_identity()
+                  AND t.company_id = research_reports.company_id
+                  AND t.status IN ('pending', 'in_progress')
+            )
+        )
+    );
 
 CREATE POLICY agent_insert_research_findings ON research_findings FOR INSERT TO authenticated 
-    WITH CHECK (is_agent() AND is_agent_type('researcher'));
+    WITH CHECK (
+        is_agent() AND 
+        is_agent_type('researcher') AND 
+        EXISTS (
+            SELECT 1 FROM research_reports r 
+            WHERE r.id = research_findings.report_id 
+              AND r.research_agent_identity = current_agent_identity()
+        )
+    );
 
 CREATE POLICY agent_select_research_findings ON research_findings FOR SELECT TO authenticated 
-    USING (is_agent());
+    USING (
+        is_agent() AND EXISTS (
+            SELECT 1 FROM research_reports r 
+            WHERE r.id = research_findings.report_id 
+              AND (
+                  (is_agent_type('researcher') AND r.research_agent_identity = current_agent_identity()) OR
+                  EXISTS (
+                      SELECT 1 FROM tasks t 
+                      WHERE t.assigned_actor_type = 'agent' 
+                        AND t.assigned_actor_identity = current_agent_identity()
+                        AND t.company_id = r.company_id
+                        AND t.status IN ('pending', 'in_progress')
+                  )
+              )
+        )
+    );
 
 -- Qualification Subagent Scoped Permissions
 CREATE POLICY agent_insert_lead_qualifications ON lead_qualifications FOR INSERT TO authenticated 
     WITH CHECK (
         is_agent() AND 
         is_agent_type('qualifier') AND 
+        evaluator_type = 'agent' AND 
+        evaluator_identity = current_agent_identity() AND 
         review_status = 'draft' AND 
-        reviewed_by_human_id IS NULL
+        reviewed_by_human_id IS NULL AND 
+        reviewed_at IS NULL
     );
 
 CREATE POLICY agent_select_lead_qualifications ON lead_qualifications FOR SELECT TO authenticated 
-    USING (is_agent());
+    USING (
+        is_agent() AND (
+            (is_agent_type('qualifier') AND (
+                evaluator_identity = current_agent_identity() OR 
+                EXISTS (
+                    SELECT 1 FROM tasks t 
+                    WHERE t.assigned_actor_type = 'agent' 
+                      AND t.assigned_actor_identity = current_agent_identity()
+                      AND t.company_id = lead_qualifications.company_id
+                      AND t.status IN ('pending', 'in_progress')
+                )
+            )) OR
+            (is_agent_type('drafter') AND review_status = 'approved' AND EXISTS (
+                SELECT 1 FROM tasks t 
+                WHERE t.assigned_actor_type = 'agent' 
+                  AND t.assigned_actor_identity = current_agent_identity()
+                  AND t.company_id = lead_qualifications.company_id
+                  AND t.status IN ('pending', 'in_progress')
+            ))
+        )
+    );
 
 -- Outreach Drafting Subagent Scoped Permissions
 CREATE POLICY agent_insert_outreach_messages ON outreach_messages FOR INSERT TO authenticated 
     WITH CHECK (
         is_agent() AND 
         is_agent_type('drafter') AND 
+        drafted_by_agent_identity = current_agent_identity() AND 
         approval_status = 'draft' AND 
         approved_by_human_id IS NULL AND 
+        approved_at IS NULL AND 
+        is_admin_override = FALSE AND 
+        override_reason IS NULL AND 
+        override_by_human_id IS NULL AND 
         sending_status = 'draft' AND
         proposed_commercial_model != 'strategic_revenue_sharing'
     );
 
 CREATE POLICY agent_select_outreach_messages ON outreach_messages FOR SELECT TO authenticated 
-    USING (is_agent());
+    USING (
+        is_agent() AND 
+        is_agent_type('drafter') AND (
+            drafted_by_agent_identity = current_agent_identity() OR 
+            EXISTS (
+                SELECT 1 FROM tasks t 
+                WHERE t.assigned_actor_type = 'agent' 
+                  AND t.assigned_actor_identity = current_agent_identity()
+                  AND t.company_id = outreach_messages.company_id
+                  AND t.status IN ('pending', 'in_progress')
+            )
+        )
+    );
 
 -- Activity Logging for Agents
 CREATE POLICY agent_insert_activities ON activities FOR INSERT TO authenticated 
-    WITH CHECK (is_agent() AND performed_by_actor_type = 'agent');
+    WITH CHECK (
+        is_agent() AND 
+        performed_by_actor_type = 'agent' AND 
+        performed_by_actor_identity = current_agent_identity()
+    );
 
 CREATE POLICY agent_select_activities ON activities FOR SELECT TO authenticated 
-    USING (is_agent());
+    USING (
+        is_agent() AND (
+            (performed_by_actor_type = 'agent' AND performed_by_actor_identity = current_agent_identity()) OR
+            EXISTS (
+                SELECT 1 FROM tasks t 
+                WHERE t.assigned_actor_type = 'agent' 
+                  AND t.assigned_actor_identity = current_agent_identity()
+                  AND t.company_id = activities.company_id
+                  AND t.status IN ('pending', 'in_progress')
+            )
+        )
+    );
 
 -- Task Access Restricted by Agent Identity
 CREATE POLICY agent_select_assigned_tasks ON tasks FOR SELECT TO authenticated 
@@ -1407,7 +1589,7 @@ REVOKE ALL ON ALL TABLES IN SCHEMA public FROM anon, authenticated, public;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM anon, authenticated, public;
 
 -- Grant EXECUTE on trusted security and calculation helpers
-GRANT EXECUTE ON FUNCTION is_human_operator, is_agent, is_agent_type, current_agent_identity, current_actor_role, add_business_days TO authenticated;
+GRANT EXECUTE ON FUNCTION is_human_operator, is_admin_operator, is_agent, is_agent_type, current_agent_identity, current_actor_role, add_business_days TO authenticated;
 
 -- Grant standard DML to authenticated role (Row Level Security narrows row access)
 GRANT SELECT, INSERT, UPDATE, DELETE ON companies, company_domains, contacts, research_reports, research_findings, lead_qualifications, outreach_campaigns, outreach_messages, conversations, conversation_messages, activities, tasks TO authenticated;

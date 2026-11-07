@@ -24,8 +24,10 @@ CREATE OR REPLACE FUNCTION is_technical_lead()
 RETURNS BOOLEAN AS $$
 BEGIN
     RETURN COALESCE(
-        (auth.jwt() -> 'app_metadata' ->> 'technical_role') = 'lead_engineer' OR
-        (auth.jwt() -> 'app_metadata' ->> 'user_role') IN ('technical_lead', 'lead_engineer', 'founder'),
+        (auth.jwt() -> 'app_metadata' ->> 'user_role') != 'agent' AND (
+            (auth.jwt() -> 'app_metadata' ->> 'technical_role') = 'lead_engineer' OR
+            (auth.jwt() -> 'app_metadata' ->> 'user_role') IN ('technical_lead', 'lead_engineer', 'founder')
+        ),
         FALSE
     );
 END;
@@ -183,11 +185,16 @@ CREATE TABLE projects (
     currency VARCHAR(3),
     deposit_required NUMERIC(12,2),
     deposit_paid BOOLEAN NOT NULL DEFAULT FALSE,
+    deposit_confirmed_by_human_id UUID,
     deposit_paid_at TIMESTAMPTZ,
     -- Financial Completion Semantics (Auditable closeout condition)
     final_payment_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
     final_payment_confirmed_by_human_id UUID,
     final_payment_confirmed_at TIMESTAMPTZ,
+    -- Auditable Payment Reversal / Correction Metadata
+    payment_reversal_reason TEXT,
+    payment_reversal_by_human_id UUID,
+    payment_reversal_at TIMESTAMPTZ,
     -- Pre-operational Delivery Readiness Authorization Gate
     team_delivery_authorized BOOLEAN NOT NULL DEFAULT FALSE,
     team_delivery_authorized_by_human_id UUID,
@@ -204,12 +211,24 @@ CREATE TABLE projects (
     -- Format & Amount Checks
     CONSTRAINT chk_projects_currency CHECK (currency IS NULL OR currency ~* '^[A-Z]{3}$'),
     CONSTRAINT chk_project_deposit_sync CHECK (
-        (deposit_paid = FALSE AND deposit_paid_at IS NULL) OR 
-        (deposit_paid = TRUE AND deposit_paid_at IS NOT NULL)
+        (deposit_paid = FALSE AND deposit_paid_at IS NULL AND deposit_confirmed_by_human_id IS NULL) OR 
+        (deposit_paid = TRUE AND deposit_paid_at IS NOT NULL AND deposit_confirmed_by_human_id IS NOT NULL)
     ),
     CONSTRAINT chk_project_final_payment_sync CHECK (
         (final_payment_confirmed = FALSE AND final_payment_confirmed_at IS NULL AND final_payment_confirmed_by_human_id IS NULL) OR 
         (final_payment_confirmed = TRUE AND final_payment_confirmed_at IS NOT NULL AND final_payment_confirmed_by_human_id IS NOT NULL)
+    ),
+    CONSTRAINT chk_project_payment_reversal_sync CHECK (
+        (payment_reversal_reason IS NULL AND payment_reversal_by_human_id IS NULL AND payment_reversal_at IS NULL) OR 
+        (payment_reversal_reason IS NOT NULL AND TRIM(payment_reversal_reason) != '' AND payment_reversal_by_human_id IS NOT NULL AND payment_reversal_at IS NOT NULL)
+    ),
+    CONSTRAINT chk_project_feasibility_sync CHECK (
+        (feasibility_status = 'pending_review' AND feasibility_reviewed_by_lead_id IS NULL AND feasibility_reviewed_at IS NULL) OR 
+        (feasibility_status IN ('approved_by_lead', 'rejected_unfeasible') AND feasibility_reviewed_by_lead_id IS NOT NULL AND feasibility_reviewed_at IS NOT NULL)
+    ),
+    CONSTRAINT chk_project_delivery_auth_sync CHECK (
+        (team_delivery_authorized = FALSE AND team_delivery_authorized_by_human_id IS NULL AND team_delivery_authorized_at IS NULL) OR 
+        (team_delivery_authorized = TRUE AND team_delivery_authorized_by_human_id IS NOT NULL AND team_delivery_authorized_at IS NOT NULL)
     ),
     CONSTRAINT chk_project_amounts CHECK (
         (commercial_value IS NULL OR commercial_value >= 0) AND
@@ -328,6 +347,142 @@ CREATE TRIGGER trg_project_change_requests_updated_at
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
+-- Trigger Function: Enforce Secure Payment Confirmation & Privileged Reversal
+-- Enforces:
+-- 1. Deposit and Final payment confirmation require authenticated human operator (auth.uid() IS NOT NULL).
+-- 2. Recorded identity must match auth.uid().
+-- 3. Confirmation timestamps are database-generated (clock_timestamp()).
+-- 4. Confirmed metadata cannot be arbitrarily modified or spoofed.
+-- 5. Reversal requires admin/founder role, non-empty reversal reason, and records reversal attribution.
+-- 6. Closed projects cannot have final payment confirmation reversed.
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fn_enforce_project_payment_governance()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- =========================================================================
+    -- 1. DEPOSIT PAYMENT CONFIRMATION GOVERNANCE
+    -- =========================================================================
+
+    -- Transition: FALSE -> TRUE (Confirmation)
+    IF NEW.deposit_paid = TRUE AND (OLD IS NULL OR OLD.deposit_paid = FALSE) THEN
+        IF is_agent() THEN
+            RAISE EXCEPTION 'Security Policy Violation: Agents are strictly prohibited from confirming project payments.';
+        END IF;
+
+        IF NOT is_human_operator() THEN
+            RAISE EXCEPTION 'Security Policy Violation: Only an authorized human operator can confirm deposit payment.';
+        END IF;
+
+        IF auth.uid() IS NULL THEN
+            RAISE EXCEPTION 'Security Policy Violation: Payment confirmation requires an authenticated session with non-null auth.uid().';
+        END IF;
+
+        IF NEW.deposit_confirmed_by_human_id IS DISTINCT FROM auth.uid() THEN
+            RAISE EXCEPTION 'Security Policy Violation: deposit_confirmed_by_human_id must match authenticated operator ID (%).', auth.uid();
+        END IF;
+
+        NEW.deposit_paid_at = clock_timestamp();
+    END IF;
+
+    -- Deposit confirmed metadata protection (TRUE -> TRUE)
+    IF OLD IS NOT NULL AND OLD.deposit_paid = TRUE AND NEW.deposit_paid = TRUE THEN
+        IF NEW.deposit_confirmed_by_human_id IS DISTINCT FROM OLD.deposit_confirmed_by_human_id OR
+           NEW.deposit_paid_at IS DISTINCT FROM OLD.deposit_paid_at THEN
+            RAISE EXCEPTION 'Security Policy Violation: Cannot alter deposit confirmation metadata on an already confirmed project.';
+        END IF;
+    END IF;
+
+    -- Deposit Reversal (TRUE -> FALSE)
+    IF OLD IS NOT NULL AND OLD.deposit_paid = TRUE AND NEW.deposit_paid = FALSE THEN
+        IF NOT is_admin_operator() THEN
+            RAISE EXCEPTION 'Security Policy Violation: Only authorized admin or founder roles can reverse a deposit payment confirmation.';
+        END IF;
+
+        IF NEW.payment_reversal_reason IS NULL OR TRIM(NEW.payment_reversal_reason) = '' THEN
+            RAISE EXCEPTION 'Audit Violation: Payment reversal requires a documented non-empty payment_reversal_reason.';
+        END IF;
+
+        NEW.payment_reversal_by_human_id = auth.uid();
+        NEW.payment_reversal_at = clock_timestamp();
+        NEW.deposit_confirmed_by_human_id = NULL;
+        NEW.deposit_paid_at = NULL;
+    END IF;
+
+    -- Reset unconfirmed deposit metadata
+    IF NEW.deposit_paid = FALSE AND (OLD IS NULL OR OLD.deposit_paid = FALSE) THEN
+        NEW.deposit_confirmed_by_human_id = NULL;
+        NEW.deposit_paid_at = NULL;
+    END IF;
+
+    -- =========================================================================
+    -- 2. FINAL PAYMENT CONFIRMATION GOVERNANCE
+    -- =========================================================================
+
+    -- Transition: FALSE -> TRUE (Confirmation)
+    IF NEW.final_payment_confirmed = TRUE AND (OLD IS NULL OR OLD.final_payment_confirmed = FALSE) THEN
+        IF is_agent() THEN
+            RAISE EXCEPTION 'Security Policy Violation: Agents are strictly prohibited from confirming project payments.';
+        END IF;
+
+        IF NOT is_human_operator() THEN
+            RAISE EXCEPTION 'Security Policy Violation: Only an authorized human operator can confirm final payment.';
+        END IF;
+
+        IF auth.uid() IS NULL THEN
+            RAISE EXCEPTION 'Security Policy Violation: Payment confirmation requires an authenticated session with non-null auth.uid().';
+        END IF;
+
+        IF NEW.final_payment_confirmed_by_human_id IS DISTINCT FROM auth.uid() THEN
+            RAISE EXCEPTION 'Security Policy Violation: final_payment_confirmed_by_human_id must match authenticated operator ID (%).', auth.uid();
+        END IF;
+
+        NEW.final_payment_confirmed_at = clock_timestamp();
+    END IF;
+
+    -- Final payment confirmed metadata protection (TRUE -> TRUE)
+    IF OLD IS NOT NULL AND OLD.final_payment_confirmed = TRUE AND NEW.final_payment_confirmed = TRUE THEN
+        IF NEW.final_payment_confirmed_by_human_id IS DISTINCT FROM OLD.final_payment_confirmed_by_human_id OR
+           NEW.final_payment_confirmed_at IS DISTINCT FROM OLD.final_payment_confirmed_at THEN
+            RAISE EXCEPTION 'Security Policy Violation: Cannot alter final payment confirmation metadata on an already confirmed project.';
+        END IF;
+    END IF;
+
+    -- Final Payment Reversal (TRUE -> FALSE)
+    IF OLD IS NOT NULL AND OLD.final_payment_confirmed = TRUE AND NEW.final_payment_confirmed = FALSE THEN
+        IF NOT is_admin_operator() THEN
+            RAISE EXCEPTION 'Security Policy Violation: Only authorized admin or founder roles can reverse a final payment confirmation.';
+        END IF;
+
+        IF OLD.status = 'closed' OR NEW.status = 'closed' THEN
+            RAISE EXCEPTION 'Integrity Violation: Final payment confirmation cannot be reversed on a closed project.';
+        END IF;
+
+        IF NEW.payment_reversal_reason IS NULL OR TRIM(NEW.payment_reversal_reason) = '' THEN
+            RAISE EXCEPTION 'Audit Violation: Payment reversal requires a documented non-empty payment_reversal_reason.';
+        END IF;
+
+        NEW.payment_reversal_by_human_id = auth.uid();
+        NEW.payment_reversal_at = clock_timestamp();
+        NEW.final_payment_confirmed_by_human_id = NULL;
+        NEW.final_payment_confirmed_at = NULL;
+    END IF;
+
+    -- Reset unconfirmed final payment metadata
+    IF NEW.final_payment_confirmed = FALSE AND (OLD IS NULL OR OLD.final_payment_confirmed = FALSE) THEN
+        NEW.final_payment_confirmed_by_human_id = NULL;
+        NEW.final_payment_confirmed_at = NULL;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_enforce_project_payment
+    BEFORE INSERT OR UPDATE ON projects
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_enforce_project_payment_governance();
+
+-- -----------------------------------------------------------------------------
 -- Trigger Function: Enforce Technical Lead Feasibility Sign-Off
 -- Ensures only an authenticated Technical Lead (is_technical_lead() = TRUE)
 -- can approve or reject feasibility on projects.
@@ -352,7 +507,7 @@ BEGIN
         END IF;
 
         IF NEW.feasibility_reviewed_by_lead_id IS DISTINCT FROM auth.uid() THEN
-            RAISE EXCEPTION 'Security Policy Violation: feasibility_reviewed_by_lead_id must match authenticated Technical Lead ID.';
+            RAISE EXCEPTION 'Security Policy Violation: feasibility_reviewed_by_lead_id must match authenticated Technical Lead ID (%).', auth.uid();
         END IF;
 
         NEW.feasibility_reviewed_at = clock_timestamp();
@@ -376,6 +531,12 @@ BEGIN
             NEW.feasibility_reviewed_at = NULL;
             NEW.feasibility_review_notes = COALESCE(OLD.feasibility_review_notes, '') || ' [RESET: Scope or delivery mode altered on ' || clock_timestamp()::text || ']';
         END IF;
+    END IF;
+
+    -- Reset reviewer fields if pending_review
+    IF NEW.feasibility_status = 'pending_review' THEN
+        NEW.feasibility_reviewed_by_lead_id = NULL;
+        NEW.feasibility_reviewed_at = NULL;
     END IF;
 
     RETURN NEW;
@@ -409,8 +570,12 @@ BEGIN
             RAISE EXCEPTION 'Operational Security Violation: Delivery team readiness requires an authenticated session with non-null auth.uid().';
         END IF;
 
+        IF NEW.feasibility_status != 'approved_by_lead' THEN
+            RAISE EXCEPTION 'Operational Security Violation: Cannot authorize delivery before Technical Lead feasibility approval.';
+        END IF;
+
         IF NEW.team_delivery_authorized_by_human_id IS DISTINCT FROM auth.uid() THEN
-            RAISE EXCEPTION 'Operational Security Violation: team_delivery_authorized_by_human_id must match authenticated operator ID.';
+            RAISE EXCEPTION 'Operational Security Violation: team_delivery_authorized_by_human_id must match authenticated operator ID (%).', auth.uid();
         END IF;
 
         NEW.team_delivery_authorized_at = clock_timestamp();
@@ -441,6 +606,12 @@ BEGIN
             NEW.team_delivery_authorized_at = NULL;
             NEW.team_delivery_authorization_notes = COALESCE(OLD.team_delivery_authorization_notes, '') || ' [REVOKED: Material project parameters altered on ' || clock_timestamp()::text || ']';
         END IF;
+    END IF;
+
+    -- Reset authorization fields if not authorized
+    IF NEW.team_delivery_authorized = FALSE THEN
+        NEW.team_delivery_authorized_by_human_id = NULL;
+        NEW.team_delivery_authorized_at = NULL;
     END IF;
 
     RETURN NEW;
@@ -686,10 +857,27 @@ BEGIN
         END IF;
 
         IF NEW.feasibility_reviewed_by_lead_id IS DISTINCT FROM auth.uid() THEN
-            RAISE EXCEPTION 'Security Policy Violation: feasibility_reviewed_by_lead_id must match authenticated Technical Lead ID.';
+            RAISE EXCEPTION 'Security Policy Violation: feasibility_reviewed_by_lead_id must match authenticated Technical Lead ID (%).', auth.uid();
         END IF;
 
         NEW.feasibility_reviewed_at = clock_timestamp();
+    END IF;
+
+    -- Prevent modification of reviewer identity or timestamp once set
+    IF OLD IS NOT NULL AND OLD.feasibility_status IN ('approved_by_lead', 'rejected_unfeasible') AND 
+       NEW.feasibility_status = OLD.feasibility_status THEN
+        IF NEW.feasibility_reviewed_by_lead_id IS DISTINCT FROM OLD.feasibility_reviewed_by_lead_id OR 
+           NEW.feasibility_reviewed_at IS DISTINCT FROM OLD.feasibility_reviewed_at THEN
+            RAISE EXCEPTION 'Security Policy Violation: Cannot alter reviewer identity or timestamp of a signed Change Request feasibility determination.';
+        END IF;
+    END IF;
+
+    -- Prevent modification of partner approval identity or timestamp once approved
+    IF OLD IS NOT NULL AND OLD.status = 'approved_by_partner' AND NEW.status = 'approved_by_partner' THEN
+        IF NEW.partner_approved_by_human_id IS DISTINCT FROM OLD.partner_approved_by_human_id OR 
+           NEW.decision_at IS DISTINCT FROM OLD.decision_at THEN
+            RAISE EXCEPTION 'Security Policy Violation: Cannot alter partner approval identity or timestamp of an approved Change Request.';
+        END IF;
     END IF;
 
     -- Handle partner approval of Change Request
@@ -796,20 +984,12 @@ CREATE POLICY human_operator_all_project_milestones ON project_milestones FOR AL
 CREATE POLICY human_operator_all_project_change_requests ON project_change_requests FOR ALL TO authenticated 
     USING (is_human_operator()) WITH CHECK (is_human_operator());
 
--- 7.3. Scoped Agent Permissions (Read-Only Context Access; Zero Mutation Access)
-CREATE POLICY agent_select_partnerships ON partnerships FOR SELECT TO authenticated 
-    USING (is_agent());
+-- 7.3. Scoped Agent Access Restriction (Zero Agent Access in Phase 2.1)
+-- In the pre-operational stage, subagents (researcher, qualifier, drafter) are
+-- strictly restricted from reading or mutating delivery tables. RLS defaults to DENY.
 
-CREATE POLICY agent_select_projects ON projects FOR SELECT TO authenticated 
-    USING (is_agent());
-
-CREATE POLICY agent_select_project_milestones ON project_milestones FOR SELECT TO authenticated 
-    USING (is_agent());
-
-CREATE POLICY agent_select_project_change_requests ON project_change_requests FOR SELECT TO authenticated 
-    USING (is_agent());
-
--- 7.4. Table Level Privilege Grants
+-- 7.4. Table Level Privilege Grants & Helper Function Permissions
+GRANT EXECUTE ON FUNCTION is_technical_lead TO authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON partnerships, projects, project_milestones, project_change_requests TO authenticated;
 
 -- =============================================================================
