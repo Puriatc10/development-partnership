@@ -1,16 +1,21 @@
 # Task Execution & Coordination Protocol
 
-**Document Version:** 1.0.0  
-**Phase:** 2.2 — Agent Operating Model & Workflow Design  
-**Target Platform:** Hermes Multi-Agent Orchestration Engine & Supabase PostgreSQL CRM  
+**Document Version:** 2.0.0  
+**Phase:** 2.2 — Final Contract & Runtime Alignment  
+**Target Platform:** Logical Multi-Agent Architecture (Antigravity Interactive Supervised Runtime [Temporary] / Hermes Autonomous Runtime [Future]) & Supabase PostgreSQL CRM  
 **Status:** Canonical Design Specification (Design & Documentation Only)  
 **Date:** 2026-11-07  
 
 ---
 
+> [!NOTE]
+> **Synthetic Data Disclosure:** All agency names, personal identities, email addresses, web domains, and task parameters used in this document are strictly fictional, synthetic examples designed solely for workflow modeling, data-flow illustration, and schema validation.
+
+---
+
 ## 1. Task Coordination Architecture
 
-This document defines the execution protocol, lifecycle state machine, assignment rules, dependency management, failure handling, and handoff mechanics governing operational tasks executed across human operators and Hermes subagents.
+This document defines the execution protocol, lifecycle state machine, assignment rules, dependency management, failure handling, and handoff mechanics governing operational tasks executed across human operators and subagents.
 
 ### 1.1. The PostgreSQL `tasks` Table Foundation
 The operational coordination backbone is the canonical `tasks` table defined in [`crm/schema.sql`](file:///c:/Users/puria/Desktop/code-workshop/projects/development-partnership/crm/schema.sql):
@@ -45,6 +50,7 @@ The task coordination layer is fortified by database-level constraints and trigg
    - Agents can **never** modify task assignment (`assigned_actor_type`, `assigned_actor_identity`), scope (`company_id`, `contact_id`, `campaign_id`), or creation timestamps.
    - Agents cannot skip states: transitioning from `pending` directly to `completed` without executing in `in_progress` is blocked.
    - Agents cannot reopen or modify tasks that are already `completed` or `cancelled`.
+   - Agents **cannot** reset stale tasks from `in_progress` back to `pending`.
    - Automated timestamp management: sets `completed_at = clock_timestamp()` upon completion and clears `completed_at = NULL` if reopened by a human operator.
 
 ---
@@ -65,7 +71,7 @@ A task progresses through four lifecycle states:
        ┌──────────┤ in_progress  ├──────────┐
        │          └──────┬───────┘          │
        │                 │                  │
-(Operator cancels) (Deliverable produced) (Failure / timeout)
+(Operator cancels) (Deliverable produced) (Operator cancels on error)
        │                 │                  │
        ▼                 ▼                  ▼
 ┌──────────────┐  ┌──────────────┐   ┌──────────────┐
@@ -84,10 +90,11 @@ A task progresses through four lifecycle states:
 
 | From State | To State | Permitted Actor | Execution Requirements / Invariants | Automated Side Effects |
 | :--- | :--- | :--- | :--- | :--- |
-| `pending` | `in_progress` | Assigned Agent / Human | `assigned_actor_identity` must match caller identity. | Task lock acquired. |
-| `in_progress` | `completed` | Assigned Agent / Human | Operational deliverable persisted in database. | `completed_at = clock_timestamp()` auto-populated. |
+| `pending` | `in_progress` | Assigned Agent / Human | `assigned_actor_identity` must match caller identity (`current_agent_identity()`). | Task acquired. |
+| `in_progress` | `completed` | Assigned Agent / Human | Operational deliverable persisted in database domain table. | `completed_at = clock_timestamp()` auto-populated. |
 | `pending` | `completed` | Human Operator Only | **Blocked for Agents** by `fn_enforce_task_governance`. | `completed_at` populated. |
-| `pending` / `in_progress` | `cancelled` | Human Operator / Orchestrator | Execution halted, obsolete, or unresolvable error. | Downstream tasks cancelled. |
+| `pending` / `in_progress` | `cancelled` | Human Operator Only | Execution halted, obsolete, or unresolvable error. (Orchestrator has no database cancel permissions). | Downstream tasks cancelled or unblocked. |
+| `in_progress` | `pending` | Human Operator Only | **Blocked for Agents** by `fn_enforce_task_governance`. Agents cannot reset tasks backward. | Reset for reassignment. |
 | `completed` | `in_progress` | Human Operator Only | **Blocked for Agents**. Operator requests task rework. | `completed_at = NULL` cleared. |
 | `completed` / `cancelled`| Any state | Agents BLOCKED | Terminated tasks cannot be mutated or reopened by agents. | Exception raised. |
 
@@ -110,11 +117,12 @@ To ensure consistency across workflows, `task_type` values are standardized:
 ### 3.2. Assignment Rules & Ownership
 1. **Explicit Identity Binding:** Every subagent task must explicitly declare:
    - `assigned_actor_type = 'agent'`
-   - `assigned_actor_identity = 'hermes-<subagent>-v1'`
+   - `assigned_actor_identity = 'hermes-<subagent>-v1'` (or runtime-specific agent identifier)
 2. **Immutable Ownership:** Once created, an agent cannot reassign a task to another subagent, change its assignment to human, or reassign human tasks to itself.
 3. **Database Write Path for Creation:**
    - Under current RLS policies, table INSERT on `tasks` is restricted to `is_human_operator() = TRUE`.
-   - The Orchestrator generates tasks via an authorized Human Operator JWT session or a trusted backend service role.
+   - The Orchestrator has NO dedicated database agent identity and NO RLS write policies.
+   - Tasks are generated exclusively via an authorized Human Operator JWT session (`user_role IN ('operator', 'admin', 'founder')`) or a trusted backend ingestion pipeline operating under operator claims.
 
 ---
 
@@ -129,16 +137,16 @@ Handoffs between subagents do **not** rely on peer-to-peer inter-agent messaging
 
 1. **Subagent Execution & Persistence:**
    - Subagent $A$ executes work, persists its structured output deliverable (e.g., `research_reports`) in the target database table, and updates its assigned task in `tasks` to `status = 'completed'`.
-2. **Orchestrator Validation:**
-   - The Orchestrator detects task completion (via polling or event trigger).
+2. **Completion Validation:**
+   - The Orchestrator / Human Operator detects task completion.
    - Validates that the expected database deliverable actually exists and satisfies quality/evidence criteria.
 3. **Downstream Task Provisioning:**
-   - If preconditions are satisfied, the Orchestrator creates the downstream task (e.g., `task_type = 'lead_qualification'`) bound to the same `company_id`.
-   - If downstream execution requires human approval (e.g., after qualification), the Orchestrator creates a task assigned to `assigned_actor_type = 'human'`.
+   - If preconditions are satisfied, the downstream task (e.g., `task_type = 'lead_qualification'`) bound to the same `company_id` is created via the Human Operator session.
+   - If downstream execution requires human approval (e.g., after qualification), a task assigned to `assigned_actor_type = 'human'` is provisioned.
 
 ---
 
-## 5. Current Database Task Limitations & Architectural Solutions
+## 5. Current Database Task Limitations & Three-Layer Architecture
 
 The current `tasks` table is an operational foundation, but exhibits specific schema limitations for advanced autonomous orchestration:
 
@@ -148,10 +156,10 @@ The current `tasks` table is an operational foundation, but exhibits specific sc
 | :--- | :--- | :--- |
 | **Structured Input Payload** | No `input_payload` JSONB column. | Subagent must infer parameters from relational foreign keys (`company_id`, `contact_id`, `campaign_id`). |
 | **Structured Output Payload** | No `output_payload` JSONB column. | Subagent persists deliverables directly in domain tables (`research_reports`, etc.) rather than in the task record. |
-| **Retry Counter** | No `retry_count` or `max_retries` integer. | Retries must be tracked in Hermes application memory or execution logs. |
-| **Execution Leases & Timeouts** | No `lease_expires_at` timestamp. | Stalled agent workers cannot be automatically detected or reclaimed by database triggers alone. |
-| **Idempotency Keys** | No `idempotency_key` unique column. | Orchestrator must prevent duplicate task creation via application-level deduplication. |
-| **Execution Traces & Error Logs**| No `error_log` or `execution_trace` column. | Failure details, stack traces, and tool logs must be recorded in application telemetry. |
+| **Retry Counter** | No `retry_count` or `max_retries` integer. | Retries cannot be tracked natively by SQL triggers; must be handled by application runtime or human operator. |
+| **Execution Leases & Timeouts** | No `lease_expires_at` timestamp. | Stalled agent workers cannot be automatically detected or reclaimed by database triggers alone. Worker leases are NOT an implemented database capability. |
+| **Idempotency Keys** | No `idempotency_key` unique column. | Application layer / operator must prevent duplicate task creation via deduplication checks. |
+| **Execution Traces & Error Logs**| No `error_log` or `execution_trace` column. | Failure details, stack traces, and tool logs must be recorded in application runtime telemetry. |
 
 ### 5.2. Practical Implementation Strategy (Three-Layer Architecture)
 
@@ -159,18 +167,25 @@ To resolve these limitations **without modifying the database schema in Phase 2.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│ 1. DATABASE-ENFORCED LAYER (Existing Supabase Schema)                  │
+│ 1. DATABASE-ENFORCED LAYER (Existing Supabase PostgreSQL Schema)       │
 │    - Task identity, assignment (identity, type), lifecycle status      │
 │    - Foreign key scope (company_id, contact_id, campaign_id)          │
 │    - completed_at synchronization & agent update immutability guards   │
+│    - Note: Leases, retries, and worker recovery are NOT database caps  │
 └───────────────────────────────────┬────────────────────────────────────┘
                                     │
 ┌───────────────────────────────────▼────────────────────────────────────┐
-│ 2. APPLICATION EXECUTION LAYER (Hermes Runtime Memory & State Store)  │
-│    - Idempotency key tracking (prevents duplicate task generation)     │
-│    - In-flight execution leases (detects worker crashes after SLA)     │
-│    - Retry counters & exponential backoff timers                       │
-│    - Execution logs, subagent reasoning traces, and error payloads     │
+│ 2. RUNTIME ADAPTER LAYER (Execution Environment)                       │
+│    ├─ Temporary Runtime (Antigravity):                                 │
+│    │  - Interactive, operator-supervised execution                     │
+│    │  - On-demand subagent invocation via prompts / tools              │
+│    │  - No background daemons, worker leases, or autonomous schedulers │
+│    │  - Operator directly inspects errors and resets/cancels tasks     │
+│    │                                                                   │
+│    └─ Future Runtime (Hermes):                                         │
+│       - Autonomous multi-agent orchestration engine                    │
+│       - In-memory idempotency tracking, worker leases, and retries     │
+│       - Task cancellation/resets mediated via Operator session/backend │
 └───────────────────────────────────┬────────────────────────────────────┘
                                     │
 ┌───────────────────────────────────▼────────────────────────────────────┐
@@ -184,9 +199,10 @@ To resolve these limitations **without modifying the database schema in Phase 2.
 1. **Existing Database Layer (Enforced Today):**
    - Stores authoritative task state, ownership, and core entity context.
    - Domain output records are stored in dedicated tables (`research_reports`, `lead_qualifications`, `outreach_messages`), eliminating the strict need for `output_payload`.
-2. **Application Execution Layer (Hermes Runtime):**
-   - Manages orchestration state machines, in-memory retry counters, and lease timeouts.
-   - Logs tool execution errors and subagent traces to file-based or centralized application telemetry.
+   - Worker leases, automatic retries, and timeout reclaims are **not implemented database capabilities**.
+2. **Runtime Adapter Layer:**
+   - **Antigravity (Temporary Supervised Runtime):** Operates interactively. Tasks are executed with active human oversight. Subagent failures are surfaced immediately in the interactive session.
+   - **Hermes (Target Autonomous Runtime):** Manages orchestration state machines, in-memory retry counters, and lease timeouts in application memory.
 3. **Proposed Future Schema Extension (Non-Breaking):**
    - Documented as an optional future enhancement to store execution metadata natively in Supabase when high-scale distributed workers are deployed.
 
@@ -201,12 +217,12 @@ To resolve these limitations **without modifying the database schema in Phase 2.
 | **Transient Network / Rate Limit** | Web search API timeout; Supabase connection reset. | Exponential backoff (2s, 8s, 30s); retry task in `in_progress`. | 2 |
 | **Evidence Gap / Missing Data** | Target studio website offline; zero portfolio published. | Mark task `completed` with detailed `gaps_and_unknowns`; assign 0 points; route to Human Operator. | 0 |
 | **Database Constraint Rejection** | Dimension score $> 0$ without evidence; invalid status jump. | Catch exception; abort transaction; record failure in log; escalate to Operator. | 0 |
-| **Worker Process Crash** | Hermes worker crashes while task is `in_progress`. | Hermes Orchestrator monitors lease timeout (default: 15 min); reclaims stale task; resets to `pending`. | 1 |
+| **Worker Process Crash / Stalled Task** | Subagent halts or crashes while task is `in_progress`. | Under Antigravity: Operator observes interactive error and resets task. Under Hermes: Orchestrator alerts Operator/trusted backend to reset task to `pending` or cancel it. Agents cannot reset tasks directly. | 1 |
 
 ### 6.2. Human Escalation Protocol
 When an unresolvable failure or policy conflict occurs:
-1. Orchestrator marks the task as `status = 'cancelled'` (or pauses workflow).
-2. Generates an escalation alert for the Human Operator containing:
+1. The Human Operator (or trusted backend under operator credentials) marks the task as `status = 'cancelled'`. (Agents and Orchestrator have no RLS permission to cancel tasks).
+2. The runtime generates an escalation alert for the Human Operator containing:
    - Target `company_id` and company name.
    - Failing `task_type` and assigned agent identity.
    - Exact error message, exception type, and execution context.

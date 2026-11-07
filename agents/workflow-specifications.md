@@ -1,16 +1,35 @@
 # End-to-End Operational Workflows — Pipeline Specifications
 
-**Document Version:** 1.0.0  
-**Phase:** 2.2 — Agent Operating Model & Workflow Design  
-**Target Platform:** Hermes Multi-Agent Orchestration Engine & Supabase PostgreSQL CRM  
+**Document Version:** 2.0.0  
+**Phase:** 2.2 — Final Contract & Runtime Alignment  
+**Target Platform:** Logical Multi-Agent Architecture (Antigravity Interactive Supervised Runtime [Temporary] / Hermes Autonomous Runtime [Future]) & Supabase PostgreSQL CRM  
 **Status:** Canonical Design Specification (Design & Documentation Only)  
 **Date:** 2026-11-07  
+
+---
+
+> [!NOTE]
+> **Synthetic Data Disclosure:** All agency names (e.g., "Apex Visual Studio", "Horizon Digital"), personal identities (e.g., "Sarah Jenkins"), email addresses, web domains, and project portfolio references used in this document are strictly fictional, synthetic examples designed solely for workflow modeling, data-flow illustration, and schema validation.
 
 ---
 
 ## 1. Operational Workflow Architecture
 
 This document defines the five core operational workflows governing business development, partner acquisition, and pipeline management. Each workflow establishes strict entry preconditions, deterministic agent execution sequences, mandatory human approval gates, database state synchronization, and exception handling paths.
+
+### 1.1. Three-Tier Runtime Decoupled Architecture
+
+To ensure operational viability under current constraints while preserving long-term architectural integrity, workflows are decoupled across three distinct tiers:
+
+1. **Tier 1: Logical Agent Architecture:**
+   - Defines the five standard pipeline workflows, execution sequences, state dependencies, and mandatory human review gates.
+   - Remains completely invariant regardless of the underlying orchestration engine.
+2. **Tier 2: Runtime Adapter Layer:**
+   - **Temporary Supervised Runtime (Antigravity):** The current interactive runtime environment. Workflows execute interactively under direct Human Operator supervision. Subagents are triggered on-demand via slash commands or agent prompts. There are no background daemons, worker leases, or autonomous polling loops. Task generation, failure recovery, and stage synchronization are mediated by the operator.
+   - **Target Autonomous Runtime (Hermes):** The future production runtime. An autonomous multi-agent orchestration engine that will execute task queues, manage in-memory worker leases, and trigger scheduled workflows when project API credentials and hosting infrastructure become available.
+3. **Tier 3: Database Persistence & Authorization (Supabase PostgreSQL):**
+   - The authoritative source of truth. Enforces Row Level Security (RLS), state machine integrity triggers, composite foreign keys, and role-based access controls at the SQL engine level.
+   - Identical database rules, RLS policies, and tables apply whether driven interactively via Antigravity or autonomously via Hermes.
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────────────┐
@@ -82,14 +101,14 @@ Discover and filter candidate agencies and studios matching the Ideal Partner Pr
 - **Prohibited Sources:** Unofficial email scrapers, paid bulk lead lists, LinkedIn scraping tools that violate platform terms, private community directories.
 
 ### 2.3. Duplicate Detection Protocol
-Before presenting a candidate to the Human Operator, the Orchestrator executes a two-tier duplicate check:
+Before presenting a candidate to the Human Operator, a two-tier duplicate check is executed:
 1. **Primary Domain Match:** Exact lookup against `company_domains.domain` and `companies.primary_domain`.
 2. **Normalized Name Match:** Case-insensitive, punctuation-stripped comparison against `companies.name` (e.g., `"Apex Visual GmbH"` matches `"Apex Visual Studio"`).
 3. **Resolution:** If a duplicate is detected, the candidate is discarded with a duplicate log reference.
 
 ### 2.4. Company Registration & Authorization
-- **Write Permission Reality:** Subagents have zero INSERT privileges on `companies` or `company_domains`. 
-- **Registration Execution:** Registration is performed exclusively by an authenticated **Human Operator** (or trusted backend ingestion pipeline executing under operator claims).
+- **Write Permission Reality:** Discovery agents operate strictly in-memory or produce candidate output files; they have zero direct database write permissions. Subagents have zero INSERT privileges on `companies` or `company_domains`. 
+- **Registration Execution:** Registration is performed exclusively by an authenticated **Human Operator** (JWT claim `user_role IN ('operator', 'admin', 'founder')`) or a trusted ingestion pipeline executing under operator claims.
 - **Mandatory Ingestion Fields:**
   - `name`: Official commercial name.
   - `primary_domain`: Normalized domain (validated by regex `chk_companies_primary_domain_format`).
@@ -98,8 +117,9 @@ Before presenting a candidate to the Human Operator, the Orchestrator executes a
 - **Handoff Trigger:** Upon registration, the company stage transitions to `researching`, and an active task is created:
   - `task_type`: `'company_research'`
   - `assigned_actor_type`: `'agent'`
-  - `assigned_actor_identity`: `'hermes-researcher-v1'`
+  - `assigned_actor_identity`: `'hermes-researcher-v1'` (or runtime agent identifier)
   - `company_id`: UUID of the registered company.
+  - **Database Authorization Note:** Because table INSERT on `tasks` is restricted by RLS to `is_human_operator() = TRUE`, task creation is executed via the authenticated Human Operator session (or trusted backend under operator claims). The Orchestrator has NO dedicated database agent identity and NO RLS write policies.
 
 ---
 
@@ -118,8 +138,8 @@ Conduct structured, evidence-backed research on a registered company to identify
 [Multi-Vector Investigation]
  ├── Services & Positioning (Website, Case Studies)
  ├── Technology Stack (Frontend, CMS, APIs, Builders)
- ├── Client Portfolio (Brand names, project complexity)
- ├── Team Scale & Key Decision-Makers
+ ├── Client Roster & Portfolio (Brand names, project complexity)
+ ├── Team Scale & Key Decision-Makers (Proposed Contacts)
  └── Engineering Bottlenecks & Gaps
        │
        ▼
@@ -148,17 +168,33 @@ Every research session must systematically investigate and answer five operation
 4. **Engineering Bottlenecks:** Do their projects exhibit complex functional requirements (authentication, dynamic external databases, API integrations) that exceed visual builder capabilities?
 5. **Decision-Maker Accessibility:** Who owns technical partnership decisions (Founder, Co-Founder, Technical Director, Studio Lead)? Are their professional profiles accessible?
 
-### 3.3. Evidence Standards & Unknown Information Handling
-- **Categorization:** Every piece of evidence must be classified under `technology_stack`, `client_portfolio`, `recurring_demand`, `team_structure`, `decision_maker`, or `commercial_model`.
-- **Verified Facts vs. Hypotheses:** Direct first-party claims (agency website, founder portfolio) are tagged `verified_fact` with `high` confidence and must include the exact source URL and excerpt. Inferred observations are tagged `inferred_signal` with `medium` or `low` confidence.
-- **Handling Unknowns:** If an operational parameter (e.g., client budget floor, backend hosting provider) cannot be verified from public sources, it must be explicitly cataloged in `gaps_and_unknowns` as **`TBD`**. Assumptions or plausible default numbers are strictly forbidden.
+### 3.3. Evidence Standards & PostgreSQL Enum Alignment
+To maintain database integrity, all persisted research data must strictly adhere to database enum definitions:
+- **Finding Categories (`finding_category_type`):** Every finding must be classified using the canonical PostgreSQL enum:
+  - `'business_model'`
+  - `'client_roster'`
+  - `'technology_stack'`
+  - `'scoping_maturity'`
+  - `'growth_signals'`
+  - `'pain_points'`
+  - `'pricing_rates'`
+  - `'team_structure'`
+  - `'other'`
+  *(Deprecated strings like `'client_portfolio'`, `'decision_maker'`, `'recurring_demand'`, or `'commercial_model'` are rejected by database enum constraints.)*
+- **Finding Types (`research_finding_type`):**
+  - `'verified_fact'`: Direct first-party claims (agency website, case studies, client reviews) with `high` confidence, accompanied by exact source URL and excerpt.
+  - `'hypothesis'`: Inferred observations based on indirect signals, with `medium` or `low` confidence. (Strings such as `'inferred_signal'` or `'unverified_claim'` are invalid.)
+  - `'information_gap_tbd'`: Crucial parameters that could not be determined from public evidence.
+- **Handling Unknowns:** If an operational parameter (e.g., client budget floor, backend hosting provider) cannot be verified from public sources, it must be explicitly cataloged in `gaps_and_unknowns` as **`TBD`** or recorded as a finding of type `'information_gap_tbd'`. Guessing or filling assumptions is strictly forbidden.
 
-### 3.4. Research Completion Criteria
-A research task is considered complete when:
-- A `research_reports` record is persisted with non-null `summary`, `recommended_angle`, and cataloged `gaps_and_unknowns`.
-- At least three `research_findings` records are persisted with valid source citations.
-- At least one identified decision-maker contact is documented.
-- The task status is transitioned to `completed` in `tasks`.
+### 3.4. Research Completion Criteria & Contact Handling Boundary
+- **Database Permission Boundary on Contacts:** The `contacts` table enforces RLS policy `human_operator_all_contacts` (which grants INSERT/UPDATE/DELETE exclusively to human operators) and `agent_select_contacts` (read-only for agents). The Research Agent **CANNOT insert or update records in `contacts`**. Discovered contacts (e.g., founder/technical lead name, title, profile URL, role) are proposed output artifacts emitted within the research findings / report payload for Human Operator review and ingestion.
+- A research task is considered complete when:
+  - A `research_reports` record is persisted with non-null `summary`, `recommended_angle`, and cataloged `gaps_and_unknowns`.
+  - At least three `research_findings` records are persisted with valid source citations and canonical PostgreSQL enums.
+  - At least one proposed decision-maker contact is documented in the findings/report payload for operator ingestion.
+  - An activity record is logged in `activities` table.
+  - The task status is transitioned to `completed` in `tasks`.
 
 ---
 
@@ -172,6 +208,7 @@ Evaluate the researched prospect against the approved seven-dimension, 100-point
        │
        ▼
 [Orchestrator Generates Task: 'lead_qualification']
+ (Executed via Human Operator session / trusted pipeline)
        │
        ▼
 [Qualifier Agent Transitions Task to 'in_progress']
@@ -248,7 +285,7 @@ Prepare highly personalized, evidence-grounded draft outreach messages for quali
 [Company in 'qualified' Stage]
        │
        ▼
-[Human Operator or Orchestrator Assigns: 'outreach_drafting']
+[Human Operator Assigns Task: 'outreach_drafting']
        │
        ▼
 [Drafter Agent Transitions Task to 'in_progress']
@@ -293,8 +330,8 @@ Every draft outreach message must satisfy four structural criteria:
 ### 5.3. Suppression & Opt-Out Enforcement
 Before generating a message draft:
 - The Drafter queries `is_identifier_suppressed(target_type, identifier)`.
-- If suppressed or opted out, task execution halts immediately, and the task is marked `cancelled` with reason `"Recipient identifier suppressed"`.
-- Database table constraints and foreign keys (`fk_outreach_contact_company`) prevent drafting messages for contacts belonging to mismatched companies.
+- If suppressed or opted out, task execution halts immediately, and the task is marked `completed` with a suppression note (or operator cancels it).
+- Database table constraints and composite foreign keys (`fk_outreach_contact_company`) prevent drafting messages for contacts belonging to mismatched companies.
 
 ### 5.4. Human Approval Gate
 - **Strict Human Dispatch Gate:** Database check constraint `chk_outreach_mandatory_human_gate` and trigger `fn_enforce_outreach_human_approval` strictly prevent `sending_status` from entering `queued`, `sending`, or `sent` unless `approval_status = 'approved'` and `approved_by_human_id = auth.uid()`.

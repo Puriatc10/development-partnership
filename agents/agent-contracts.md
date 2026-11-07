@@ -1,8 +1,8 @@
 # Standard Agent Contracts — Specifications & Payloads
 
-**Document Version:** 1.0.0  
-**Phase:** 2.2 — Agent Operating Model & Workflow Design  
-**Target Platform:** Hermes Multi-Agent Orchestration Engine & Supabase PostgreSQL CRM  
+**Document Version:** 2.0.0  
+**Phase:** 2.2 — Agent Operating Model & Workflow Design (Contract & Runtime Alignment)  
+**Target Platform:** Runtime-Independent (Current Temporary: Antigravity | Future: Hermes) & Supabase PostgreSQL CRM  
 **Status:** Canonical Design Specification (Design & Documentation Only)  
 **Date:** 2026-11-07  
 
@@ -10,13 +10,16 @@
 
 ## 1. Standardized Contract Architecture
 
-This document establishes the formal, deterministic input and output contracts for each logical agent operating within the Hermes orchestration ecosystem. 
+This document establishes the formal, deterministic input and output contracts for each logical agent operating within the multi-agent orchestration architecture.
 
 ### 1.1. Contract Design Principles
-1. **Entity Grounding:** Every contract strictly references canonical database primary keys (`company_id`, `contact_id`, `task_id`, `research_report_id`, `qualification_id`, `outreach_message_id`). Where an entity does not yet exist in the database (e.g., candidate discovery), the contract explicitly tags the field as `generated_by_persistence_layer`.
-2. **Deterministic Schemas:** All input and output payloads are defined using valid JSON schema structures with typed fields, explicit nullability, and boundary rules.
-3. **No Phantom Database Columns:** Payloads clearly distinguish between fields persisted directly in PostgreSQL and orchestration context metadata managed in the Hermes application memory.
+1. **Runtime Decoupling:** Contracts define pure business logic, input/output schemas, and evidence requirements. They are completely decoupled from runtime execution mechanics and apply equally to the current temporary interactive runtime (**Antigravity**) and the planned future autonomous runtime (**Hermes**).
+2. **Entity Grounding:** Every contract strictly references canonical database primary keys (`company_id`, `contact_id`, `task_id`, `research_report_id`, `qualification_id`, `outreach_message_id`). Where an entity does not yet exist in the database (e.g., candidate discovery or proposed contacts), the contract explicitly tags the field as `proposed_artifact_for_operator_ingestion`.
+3. **Database Enum & Constraint Compatibility:** All contract payloads strictly adhere to the exact PostgreSQL enum types defined in [`crm/schema.sql`](file:///c:/Users/puria/Desktop/code-workshop/projects/development-partnership/crm/schema.sql), specifically `research_finding_type`, `finding_category_type`, `contact_role_type`, and `commercial_model_type`.
 4. **Evidence Auditability:** Every factual finding, dimension score, or outreach claim must carry explicit source URLs, excerpt quotations, and confidence classifications.
+
+> [!NOTE]
+> **Mandatory Synthetic Data Notice:** All company names (e.g., *"Apex Visual Studio"*), individual identities (e.g., *"Maximilian Weber"*), domains (`apexvisual.de`), URLs, UUIDs, and portfolio project descriptions appearing in this document are **purely synthetic illustrative examples** designed to validate schema compatibility. They must **never** be mistaken for actual prospective partners, verified case studies, or live CRM data.
 
 ---
 
@@ -24,11 +27,11 @@ This document establishes the formal, deterministic input and output contracts f
 
 ### 2.1. Agent Identity & Purpose
 - **Name:** `hermes-orchestrator`
-- **Identity Claim:** Application runtime controller (executes orchestration logic across subagents).
+- **Identity Claim:** Application-level workflow controller (no dedicated database agent identity; executes on behalf of Human Operator).
 - **Purpose:** Ingests campaign objectives from human management, constructs sequenced task dependency trees, schedules subagent execution, tracks operational status, and routes approval requests to the human operator.
 
 ### 2.2. Trigger Conditions
-- Operator initiates a new prospecting campaign directive via the Hermes control interface.
+- Operator initiates a new prospecting campaign directive via the orchestration control interface.
 - A subagent marks an assigned task as `completed` in `tasks`, triggering downstream dependency evaluation.
 - An asynchronous event occurs (e.g., human approval granted, task execution failure, review timeout).
 
@@ -41,7 +44,7 @@ This document establishes the formal, deterministic input and output contracts f
   - `custom_due_date`: Target completion deadline.
   - `priority_override`: Operational priority (`low`, `medium`, `high`, `urgent`).
 - **Preconditions:**
-  - Authenticated session with authorized `human_operator` role.
+  - Authenticated session with authorized `operator`, `admin`, or `founder` role (`is_human_operator() = TRUE`).
   - Target outreach campaign exists in `outreach_campaigns` if workflow extends to outreach drafting.
 
 ```json
@@ -65,10 +68,10 @@ This document establishes the formal, deterministic input and output contracts f
    - Decomposes objective into discrete workflow stages (Discovery → Ingestion → Research → Qualification → Outreach Drafting).
    - Generates candidate discovery query parameters for the Discovery Agent.
    - Upon company registration by Human Operator, generates task record in `tasks` with `task_type = 'company_research'`.
-   - Monitors subagent task state progression via application polling or database webhooks.
+   - In Antigravity interactive mode: surfaces next recommended action to operator. In future Hermes mode: schedules autonomous worker.
    - Evaluates task completion outputs against quality and evidence standards before scheduling next stage.
 2. **Database Operations:**
-   - Evaluates active tasks (`SELECT FROM tasks`).
+   - Evaluates active tasks (`SELECT FROM tasks` via Human Operator session).
    - Routes operator review notifications for completed qualification scorecards and outreach drafts.
 
 ### 2.5. Expected Output Contract
@@ -95,14 +98,14 @@ This document establishes the formal, deterministic input and output contracts f
     }
   ],
   "requires_human_attention": false,
-  "execution_notes": "Discovery phase initiated for 10 candidate Webflow studios in DACH region."
+  "execution_notes": "Discovery phase initiated for 10 candidate Webflow studios in DACH region (Synthetic Example)."
 }
 ```
 
 ### 2.6. Governance, Failures & Prohibitions
 - **Evidence & Confidence Rules:** Must not synthesize or invent task completion data; task progression strictly depends on verifiable database records.
 - **Failure Conditions:** Subagent task failure; timeout exceeding SLA; unresolvable validation errors.
-- **Retry Behavior:** Maximum 2 automated retries for transient tool/network errors. Persistent failures escalate to Human Operator.
+- **Retry Behavior:** In interactive Antigravity runtime, failure prompts the operator. In future Hermes runtime, maximum 2 automated retries before operator escalation.
 - **Handoff Destination:** Routes tasks to specialized subagents; routes approval items to Human Operator queue.
 - **Prohibited Actions:** Cannot modify database schemas, cannot bypass human review gates, cannot authorize external messaging.
 
@@ -159,7 +162,7 @@ This document establishes the formal, deterministic input and output contracts f
   "candidates_discovered_count": 1,
   "candidates": [
     {
-      "candidate_name": "Apex Visual Studio",
+      "candidate_name": "Apex Visual Studio (Synthetic)",
       "primary_domain": "apexvisual.de",
       "alternate_domains": [
         "apexvisual.com"
@@ -194,7 +197,7 @@ This document establishes the formal, deterministic input and output contracts f
 
 ### 4.1. Agent Identity & Purpose
 - **Name:** `hermes-researcher`
-- **Identity Claim:** JWT `user_role = 'agent'`, `agent_type = 'researcher'`, `agent_identity = 'hermes-researcher-v1'`.
+- **Identity Claim:** JWT `app_metadata.user_role = 'agent'`, `app_metadata.subagent_type = 'researcher'`, `app_metadata.agent_id = 'hermes-researcher-v1'`.
 - **Purpose:** Conducts deep-dive investigations into registered prospective partner companies to identify technical capabilities, engineering bottlenecks, recurring client demand, and key decision-makers.
 
 ### 4.2. Trigger Conditions
@@ -218,7 +221,7 @@ This document establishes the formal, deterministic input and output contracts f
 {
   "task_id": "77777777-7777-7777-7777-777777777771",
   "company_id": "11111111-1111-1111-1111-111111111111",
-  "company_name": "Apex Visual Studio",
+  "company_name": "Apex Visual Studio (Synthetic)",
   "primary_domain": "apexvisual.de",
   "target_segment": "webflow_studio",
   "campaign_id": "33333333-3333-3333-3333-333333333333"
@@ -234,8 +237,12 @@ This document establishes the formal, deterministic input and output contracts f
    - Discover key decision-makers (Founders, Managing Directors, Head of Visual Development).
 3. **Database Persistence:**
    - INSERT into `research_reports`: store `summary`, `recommended_angle`, `overall_confidence`, `gaps_and_unknowns`.
-   - INSERT into `research_findings`: populate atomic findings with `finding_type`, `category`, `statement`, `evidence_url`, `evidence_excerpt`, and `confidence`.
+   - INSERT into `research_findings`: populate atomic findings with exact SQL enum categories:
+     - `finding_type`: `'verified_fact'`, `'hypothesis'`, or `'information_gap_tbd'`.
+     - `category`: `'business_model'`, `'client_roster'`, `'technology_stack'`, `'scoping_maturity'`, `'growth_signals'`, `'pain_points'`, `'pricing_rates'`, `'team_structure'`, or `'other'`.
+     - `confidence`: `'high'`, `'medium'`, `'low'`, or `'unverified'`.
    - Record activity log: INSERT into `activities` (`activity_type = 'note'`, summary of research completion).
+   - *(Note: Researcher CANNOT insert into `contacts`; discovered contacts are output as proposed data in the return payload for Human Operator review and ingestion).*
 4. **Complete Task:**
    - UPDATE `tasks` SET `status = 'completed'` WHERE `id = task_id`.
 
@@ -245,7 +252,7 @@ This document establishes the formal, deterministic input and output contracts f
   "task_id": "77777777-7777-7777-7777-777777777771",
   "company_id": "11111111-1111-1111-1111-111111111111",
   "research_report_id": "44444444-4444-4444-4444-444444444441",
-  "research_summary": "Apex Visual Studio is a premium 12-person Webflow agency in Berlin. They serve enterprise mobility and fintech clients. Recent case studies show client demand for user authentication and dynamic relational databases that exceed Webflow native capabilities.",
+  "research_summary": "Apex Visual Studio is a premium 12-person Webflow agency in Berlin. They serve enterprise mobility and fintech clients. Recent case studies show client demand for user authentication and dynamic relational databases that exceed Webflow native capabilities (Synthetic Example).",
   "recommended_angle": "Position as behind-the-scenes wholesale backend engineering partner for Webflow API, Supabase integrations, and custom user portals.",
   "overall_confidence": "high",
   "gaps_and_unknowns": "Exact average client project budget is unstated (marked TBD). Current backend development vendor unconfirmed.",
@@ -255,7 +262,7 @@ This document establishes the formal, deterministic input and output contracts f
       "finding_id": "55555555-5555-5555-5555-555555555551",
       "finding_type": "verified_fact",
       "category": "technology_stack",
-      "statement": "Primary visual build tool is Webflow; integrates Client-First styling and Wized for web applications.",
+      "statement": "Primary visual build tool is Webflow; integrates Client-First styling and headless components.",
       "evidence_url": "https://apexvisual.de/about",
       "evidence_excerpt": "We build exclusively on Webflow, leveraging Client-First system and advanced headless integrations.",
       "confidence": "high"
@@ -263,8 +270,8 @@ This document establishes the formal, deterministic input and output contracts f
     {
       "finding_id": "55555555-5555-5555-5555-555555555552",
       "finding_type": "verified_fact",
-      "category": "client_portfolio",
-      "statement": "Built customer portal prototype for Berlin fintech client requiring custom authentication and PostgreSQL database.",
+      "category": "client_roster",
+      "statement": "Built customer portal interface for Berlin fintech client requiring custom authentication and PostgreSQL database.",
       "evidence_url": "https://apexvisual.de/work/fintech-dashboard",
       "evidence_excerpt": "Designed complete visual interface in Webflow, connected via webhooks to custom backend architecture.",
       "confidence": "high"
@@ -272,21 +279,21 @@ This document establishes the formal, deterministic input and output contracts f
     {
       "finding_id": "55555555-5555-5555-5555-555555555553",
       "finding_type": "verified_fact",
-      "category": "decision_maker",
-      "statement": "Maximilian Weber is Co-Founder & Technical Creative Director.",
+      "category": "team_structure",
+      "statement": "Maximilian Weber is Co-Founder & Technical Creative Director leading digital execution.",
       "evidence_url": "https://apexvisual.de/team",
       "evidence_excerpt": "Maximilian Weber — Co-Founder & Creative Technology Lead.",
       "confidence": "high"
     }
   ],
-  "discovered_contacts": [
+  "proposed_contacts_for_operator_review": [
     {
       "first_name": "Maximilian",
       "last_name": "Weber",
       "job_title": "Co-Founder & Creative Technology Lead",
-      "role_type": "founder",
+      "role_type": "founder_executive",
       "is_decision_maker": true,
-      "linkedin_url": "https://linkedin.com/in/maximilian-weber-demo",
+      "linkedin_url": "https://linkedin.com/in/maximilian-weber-synthetic",
       "verification_source_url": "https://apexvisual.de/team"
     }
   ]
@@ -294,10 +301,9 @@ This document establishes the formal, deterministic input and output contracts f
 ```
 
 ### 4.6. Governance, Failures & Prohibitions
-- **Evidence Standards:** Factual claims strictly require `evidence_url` and `evidence_excerpt`. If an indicator is circumstantial, `finding_type` must be `'inferred_signal'` or `'hypothesis'`.
-- **Confidence Calibration:** Conflicting evidence must be documented in `gaps_and_unknowns`.
+- **Evidence Standards:** Factual claims strictly require `evidence_url` and `evidence_excerpt`. If an indicator is circumstantial, `finding_type` must be `'hypothesis'`. Missing facts must be logged as `'information_gap_tbd'`.
 - **Database Enforcement:** Trigger `chk_verified_fact_requires_evidence` enforces that `finding_type = 'verified_fact'` requires non-null `evidence_url` and confidence in `('high', 'medium')`.
-- **Prohibited Actions:** Cannot modify company record, cannot score qualifications, cannot insert outreach drafts.
+- **Prohibited Actions:** Cannot insert into `contacts` (blocked by RLS), cannot modify company record, cannot score qualifications, cannot insert outreach drafts.
 
 ---
 
@@ -305,7 +311,7 @@ This document establishes the formal, deterministic input and output contracts f
 
 ### 5.1. Agent Identity & Purpose
 - **Name:** `hermes-qualifier`
-- **Identity Claim:** JWT `user_role = 'agent'`, `agent_type = 'qualifier'`, `agent_identity = 'hermes-qualifier-v1'`.
+- **Identity Claim:** JWT `app_metadata.user_role = 'agent'`, `app_metadata.subagent_type = 'qualifier'`, `app_metadata.agent_id = 'hermes-qualifier-v1'`.
 - **Purpose:** Evaluates researched prospect data against the approved 7-dimension, 100-point IPP model, calculates objective qualification tiers, detects disqualifiers, and generates a draft scorecard for human operator review.
 
 ### 5.2. Trigger Conditions
@@ -381,7 +387,7 @@ This document establishes the formal, deterministic input and output contracts f
     "customer_flow": {
       "score": 18.00,
       "max": 20,
-      "evidence": "Roster of 15+ corporate clients, verified enterprise mobility accounts, active marketing case studies published quarterly.",
+      "evidence": "Roster of corporate clients, verified enterprise mobility accounts, active marketing case studies published quarterly.",
       "finding_ids": ["55555555-5555-5555-5555-555555555552"]
     },
     "development_demand": {
@@ -435,7 +441,7 @@ This document establishes the formal, deterministic input and output contracts f
 
 ### 6.1. Agent Identity & Purpose
 - **Name:** `hermes-drafter`
-- **Identity Claim:** JWT `user_role = 'agent'`, `agent_type = 'drafter'`, `agent_identity = 'hermes-drafter-v1'`.
+- **Identity Claim:** JWT `app_metadata.user_role = 'agent'`, `app_metadata.subagent_type = 'drafter'`, `app_metadata.agent_id = 'hermes-drafter-v1'`.
 - **Purpose:** Generates personalized, professional draft outreach correspondence for human-approved prospective partner contacts, referencing verified portfolio evidence.
 
 ### 6.2. Trigger Conditions
