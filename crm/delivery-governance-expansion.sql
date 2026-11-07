@@ -358,117 +358,175 @@ CREATE TRIGGER trg_project_change_requests_updated_at
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION fn_enforce_project_payment_governance()
 RETURNS TRIGGER AS $$
+DECLARE
+    v_is_deposit_confirming BOOLEAN := FALSE;
+    v_is_deposit_reversing BOOLEAN := FALSE;
+    v_is_final_confirming BOOLEAN := FALSE;
+    v_is_final_reversing BOOLEAN := FALSE;
 BEGIN
-    -- =========================================================================
-    -- 1. DEPOSIT PAYMENT CONFIRMATION GOVERNANCE
-    -- =========================================================================
+    -- Agents are strictly prohibited from modifying project payment parameters
+    IF is_agent() THEN
+        RAISE EXCEPTION 'Security Policy Violation: Agents are strictly prohibited from modifying project payment parameters.';
+    END IF;
 
-    -- Transition: FALSE -> TRUE (Confirmation)
-    IF NEW.deposit_paid = TRUE AND (OLD IS NULL OR OLD.deposit_paid = FALSE) THEN
-        IF is_agent() THEN
-            RAISE EXCEPTION 'Security Policy Violation: Agents are strictly prohibited from confirming project payments.';
+    -- =========================================================================
+    -- 1. INSERT BEHAVIOR (NEW PROJECT RECORD INITIALIZATION)
+    -- =========================================================================
+    IF OLD IS NULL THEN
+        -- Reversal metadata can NEVER be set on initial project creation
+        IF NEW.payment_reversal_reason IS NOT NULL OR 
+           NEW.payment_reversal_by_human_id IS NOT NULL OR 
+           NEW.payment_reversal_at IS NOT NULL THEN
+            RAISE EXCEPTION 'Security Policy Violation: Payment reversal metadata cannot be initialized on new project creation.';
         END IF;
 
+        -- Initial deposit payment confirmation validation if set on INSERT
+        IF NEW.deposit_paid = TRUE THEN
+            IF NOT is_human_operator() THEN
+                RAISE EXCEPTION 'Security Policy Violation: Only an authorized human operator can confirm deposit payment.';
+            END IF;
+            IF auth.uid() IS NULL THEN
+                RAISE EXCEPTION 'Security Policy Violation: Payment confirmation requires an authenticated session with non-null auth.uid().';
+            END IF;
+            IF NEW.deposit_confirmed_by_human_id IS DISTINCT FROM auth.uid() THEN
+                RAISE EXCEPTION 'Security Policy Violation: deposit_confirmed_by_human_id must match authenticated operator ID (%).', auth.uid();
+            END IF;
+            NEW.deposit_paid_at = clock_timestamp();
+        ELSE
+            NEW.deposit_confirmed_by_human_id = NULL;
+            NEW.deposit_paid_at = NULL;
+        END IF;
+
+        -- Final payment can NEVER be confirmed on initial project creation (scoping/feasibility stage)
+        IF NEW.final_payment_confirmed = TRUE THEN
+            RAISE EXCEPTION 'Lifecycle Violation: Final payment cannot be confirmed upon project creation.';
+        ELSE
+            NEW.final_payment_confirmed_by_human_id = NULL;
+            NEW.final_payment_confirmed_at = NULL;
+        END IF;
+
+        RETURN NEW;
+    END IF;
+
+    -- =========================================================================
+    -- 2. UPDATE BEHAVIOR & TRANSITION IDENTIFICATION
+    -- =========================================================================
+    v_is_deposit_confirming := (OLD.deposit_paid = FALSE AND NEW.deposit_paid = TRUE);
+    v_is_deposit_reversing  := (OLD.deposit_paid = TRUE AND NEW.deposit_paid = FALSE);
+    v_is_final_confirming   := (OLD.final_payment_confirmed = FALSE AND NEW.final_payment_confirmed = TRUE);
+    v_is_final_reversing    := (OLD.final_payment_confirmed = TRUE AND NEW.final_payment_confirmed = FALSE);
+
+    -- =========================================================================
+    -- 3. CONFIRMATION GOVERNANCE (FALSE -> TRUE)
+    -- =========================================================================
+    IF v_is_deposit_confirming THEN
         IF NOT is_human_operator() THEN
             RAISE EXCEPTION 'Security Policy Violation: Only an authorized human operator can confirm deposit payment.';
         END IF;
-
         IF auth.uid() IS NULL THEN
             RAISE EXCEPTION 'Security Policy Violation: Payment confirmation requires an authenticated session with non-null auth.uid().';
         END IF;
-
         IF NEW.deposit_confirmed_by_human_id IS DISTINCT FROM auth.uid() THEN
             RAISE EXCEPTION 'Security Policy Violation: deposit_confirmed_by_human_id must match authenticated operator ID (%).', auth.uid();
         END IF;
-
         NEW.deposit_paid_at = clock_timestamp();
     END IF;
 
-    -- Deposit confirmed metadata protection (TRUE -> TRUE)
-    IF OLD IS NOT NULL AND OLD.deposit_paid = TRUE AND NEW.deposit_paid = TRUE THEN
+    IF v_is_final_confirming THEN
+        IF NOT is_human_operator() THEN
+            RAISE EXCEPTION 'Security Policy Violation: Only an authorized human operator can confirm final payment.';
+        END IF;
+        IF auth.uid() IS NULL THEN
+            RAISE EXCEPTION 'Security Policy Violation: Payment confirmation requires an authenticated session with non-null auth.uid().';
+        END IF;
+        IF NEW.final_payment_confirmed_by_human_id IS DISTINCT FROM auth.uid() THEN
+            RAISE EXCEPTION 'Security Policy Violation: final_payment_confirmed_by_human_id must match authenticated operator ID (%).', auth.uid();
+        END IF;
+        NEW.final_payment_confirmed_at = clock_timestamp();
+    END IF;
+
+    -- =========================================================================
+    -- 4. CONFIRMED METADATA IMMUTABILITY (TRUE -> TRUE)
+    -- =========================================================================
+    IF OLD.deposit_paid = TRUE AND NEW.deposit_paid = TRUE THEN
         IF NEW.deposit_confirmed_by_human_id IS DISTINCT FROM OLD.deposit_confirmed_by_human_id OR
            NEW.deposit_paid_at IS DISTINCT FROM OLD.deposit_paid_at THEN
             RAISE EXCEPTION 'Security Policy Violation: Cannot alter deposit confirmation metadata on an already confirmed project.';
         END IF;
     END IF;
 
-    -- Deposit Reversal (TRUE -> FALSE)
-    IF OLD IS NOT NULL AND OLD.deposit_paid = TRUE AND NEW.deposit_paid = FALSE THEN
-        IF NOT is_admin_operator() THEN
-            RAISE EXCEPTION 'Security Policy Violation: Only authorized admin or founder roles can reverse a deposit payment confirmation.';
-        END IF;
-
-        IF NEW.payment_reversal_reason IS NULL OR TRIM(NEW.payment_reversal_reason) = '' THEN
-            RAISE EXCEPTION 'Audit Violation: Payment reversal requires a documented non-empty payment_reversal_reason.';
-        END IF;
-
-        NEW.payment_reversal_by_human_id = auth.uid();
-        NEW.payment_reversal_at = clock_timestamp();
-        NEW.deposit_confirmed_by_human_id = NULL;
-        NEW.deposit_paid_at = NULL;
-    END IF;
-
-    -- Reset unconfirmed deposit metadata
-    IF NEW.deposit_paid = FALSE AND (OLD IS NULL OR OLD.deposit_paid = FALSE) THEN
-        NEW.deposit_confirmed_by_human_id = NULL;
-        NEW.deposit_paid_at = NULL;
-    END IF;
-
-    -- =========================================================================
-    -- 2. FINAL PAYMENT CONFIRMATION GOVERNANCE
-    -- =========================================================================
-
-    -- Transition: FALSE -> TRUE (Confirmation)
-    IF NEW.final_payment_confirmed = TRUE AND (OLD IS NULL OR OLD.final_payment_confirmed = FALSE) THEN
-        IF is_agent() THEN
-            RAISE EXCEPTION 'Security Policy Violation: Agents are strictly prohibited from confirming project payments.';
-        END IF;
-
-        IF NOT is_human_operator() THEN
-            RAISE EXCEPTION 'Security Policy Violation: Only an authorized human operator can confirm final payment.';
-        END IF;
-
-        IF auth.uid() IS NULL THEN
-            RAISE EXCEPTION 'Security Policy Violation: Payment confirmation requires an authenticated session with non-null auth.uid().';
-        END IF;
-
-        IF NEW.final_payment_confirmed_by_human_id IS DISTINCT FROM auth.uid() THEN
-            RAISE EXCEPTION 'Security Policy Violation: final_payment_confirmed_by_human_id must match authenticated operator ID (%).', auth.uid();
-        END IF;
-
-        NEW.final_payment_confirmed_at = clock_timestamp();
-    END IF;
-
-    -- Final payment confirmed metadata protection (TRUE -> TRUE)
-    IF OLD IS NOT NULL AND OLD.final_payment_confirmed = TRUE AND NEW.final_payment_confirmed = TRUE THEN
+    IF OLD.final_payment_confirmed = TRUE AND NEW.final_payment_confirmed = TRUE THEN
         IF NEW.final_payment_confirmed_by_human_id IS DISTINCT FROM OLD.final_payment_confirmed_by_human_id OR
            NEW.final_payment_confirmed_at IS DISTINCT FROM OLD.final_payment_confirmed_at THEN
             RAISE EXCEPTION 'Security Policy Violation: Cannot alter final payment confirmation metadata on an already confirmed project.';
         END IF;
     END IF;
 
-    -- Final Payment Reversal (TRUE -> FALSE)
-    IF OLD IS NOT NULL AND OLD.final_payment_confirmed = TRUE AND NEW.final_payment_confirmed = FALSE THEN
+    -- =========================================================================
+    -- 5. REVERSAL GOVERNANCE (TRUE -> FALSE)
+    -- =========================================================================
+    IF v_is_deposit_reversing OR v_is_final_reversing THEN
+        -- Only admin/founder can reverse payment confirmation
         IF NOT is_admin_operator() THEN
-            RAISE EXCEPTION 'Security Policy Violation: Only authorized admin or founder roles can reverse a final payment confirmation.';
+            RAISE EXCEPTION 'Security Policy Violation: Only authorized admin or founder roles can reverse a payment confirmation.';
         END IF;
 
-        IF OLD.status = 'closed' OR NEW.status = 'closed' THEN
+        IF auth.uid() IS NULL THEN
+            RAISE EXCEPTION 'Security Policy Violation: Payment reversal requires an authenticated session with non-null auth.uid().';
+        END IF;
+
+        -- Terminal state guard: cannot reverse final payment on closed projects
+        IF v_is_final_reversing AND (OLD.status = 'closed' OR NEW.status = 'closed') THEN
             RAISE EXCEPTION 'Integrity Violation: Final payment confirmation cannot be reversed on a closed project.';
         END IF;
 
+        -- Mandatory non-empty reason required
         IF NEW.payment_reversal_reason IS NULL OR TRIM(NEW.payment_reversal_reason) = '' THEN
             RAISE EXCEPTION 'Audit Violation: Payment reversal requires a documented non-empty payment_reversal_reason.';
         END IF;
 
+        -- Database securely overwrites reversal actor and timestamp
         NEW.payment_reversal_by_human_id = auth.uid();
         NEW.payment_reversal_at = clock_timestamp();
-        NEW.final_payment_confirmed_by_human_id = NULL;
-        NEW.final_payment_confirmed_at = NULL;
+
+        -- Clear confirmation metadata for reversed items
+        IF v_is_deposit_reversing THEN
+            NEW.deposit_confirmed_by_human_id = NULL;
+            NEW.deposit_paid_at = NULL;
+        END IF;
+
+        IF v_is_final_reversing THEN
+            NEW.final_payment_confirmed_by_human_id = NULL;
+            NEW.final_payment_confirmed_at = NULL;
+        END IF;
+    ELSE
+        -- =====================================================================
+        -- 6. REVERSAL METADATA PROTECTION WHEN NO REVERSAL OCCURS
+        -- =====================================================================
+        -- If payment confirmation is happening (and no other payment is being reversed), clear old reversal metadata
+        IF (v_is_deposit_confirming OR v_is_final_confirming) THEN
+            NEW.payment_reversal_reason = NULL;
+            NEW.payment_reversal_by_human_id = NULL;
+            NEW.payment_reversal_at = NULL;
+        ELSE
+            -- No payment status change: block any independent modification or clearance of reversal metadata
+            IF NEW.payment_reversal_reason IS DISTINCT FROM OLD.payment_reversal_reason OR
+               NEW.payment_reversal_by_human_id IS DISTINCT FROM OLD.payment_reversal_by_human_id OR
+               NEW.payment_reversal_at IS DISTINCT FROM OLD.payment_reversal_at THEN
+                RAISE EXCEPTION 'Security Policy Violation: Payment reversal metadata cannot be independently inserted, modified, or cleared outside of an authorized payment reversal.';
+            END IF;
+        END IF;
     END IF;
 
-    -- Reset unconfirmed final payment metadata
-    IF NEW.final_payment_confirmed = FALSE AND (OLD IS NULL OR OLD.final_payment_confirmed = FALSE) THEN
+    -- =========================================================================
+    -- 7. DEFENSIVE CLEANUP FOR UNCONFIRMED PAYMENTS
+    -- =========================================================================
+    IF NEW.deposit_paid = FALSE AND NOT v_is_deposit_reversing THEN
+        NEW.deposit_confirmed_by_human_id = NULL;
+        NEW.deposit_paid_at = NULL;
+    END IF;
+
+    IF NEW.final_payment_confirmed = FALSE AND NOT v_is_final_reversing THEN
         NEW.final_payment_confirmed_by_human_id = NULL;
         NEW.final_payment_confirmed_at = NULL;
     END IF;

@@ -894,6 +894,34 @@ CREATE TRIGGER trg_sync_company_suppression
     EXECUTE FUNCTION fn_sync_company_suppression();
 
 -- -----------------------------------------------------------------------------
+-- Function: is_identifier_suppressed
+-- Narrowly scoped boolean lookup verifying if a specific identifier is suppressed.
+-- Does NOT expose the underlying suppression records, reasons, or sources to callers.
+-- Returns TRUE if suppressed, FALSE otherwise.
+-- Security Mode: SECURITY DEFINER with fixed safe search_path = public.
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION is_identifier_suppressed(
+    p_target_type suppression_target_type,
+    p_identifier TEXT
+)
+RETURNS BOOLEAN
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    IF p_identifier IS NULL OR TRIM(p_identifier) = '' THEN
+        RETURN FALSE;
+    END IF;
+
+    RETURN EXISTS (
+        SELECT 1 FROM suppression_registry
+        WHERE target_type = p_target_type
+          AND identifier = LOWER(TRIM(p_identifier))
+    );
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- -----------------------------------------------------------------------------
 -- Trigger Function: Enforce Human Approval Gate & Invalidation on Outreach
 -- Enforces:
 -- 1. No message can be queued or sent without human operator sign-off.
@@ -1019,12 +1047,10 @@ BEGIN
         JOIN companies comp ON comp.id = c.company_id
         WHERE c.id = NEW.contact_id;
 
-        IF EXISTS (
-            SELECT 1 FROM suppression_registry 
-            WHERE (target_type = 'email' AND identifier = contact_rec.email)
-               OR (target_type = 'domain' AND identifier = contact_rec.domain)
-               OR (target_type = 'linkedin' AND identifier = contact_rec.linkedin_url)
-        ) THEN
+        -- Check permanent multi-channel suppression via trusted helper
+        IF is_identifier_suppressed('email', contact_rec.email)
+           OR is_identifier_suppressed('domain', contact_rec.domain)
+           OR is_identifier_suppressed('linkedin', contact_rec.linkedin_url) THEN
             RAISE EXCEPTION 'Suppression Violation: Recipient or domain is on the permanent suppression list.';
         END IF;
     END IF;
@@ -1187,6 +1213,85 @@ CREATE TRIGGER trg_sync_lead_qualification_to_company
     AFTER INSERT OR UPDATE ON lead_qualifications
     FOR EACH ROW
     EXECUTE FUNCTION fn_sync_company_qualification();
+
+-- -----------------------------------------------------------------------------
+-- Trigger Function: Enforce Task Governance & Immutability for Agents
+-- Enforces:
+-- 1. Agents can only update their own assigned tasks (further gated by RLS).
+-- 2. Agents can NEVER modify:
+--    - assigned_actor_type
+--    - assigned_actor_identity
+--    - company_id
+--    - contact_id
+--    - task_type
+--    - title
+--    - priority
+--    - due_date
+--    - created_at
+-- 3. Agents can only update operational fields: status, description, completed_at.
+-- 4. When status is transitioned to 'completed', completed_at is set by database (clock_timestamp()).
+-- 5. If status is transitioned away from 'completed', completed_at is reset to NULL.
+-- 6. Human operators retain full management authority.
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fn_enforce_task_governance()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Only restrict agents; human operators retain full operational management
+    IF is_agent() THEN
+        -- Prevent modification of assignment and scope fields
+        IF NEW.assigned_actor_type IS DISTINCT FROM OLD.assigned_actor_type OR
+           NEW.assigned_actor_identity IS DISTINCT FROM OLD.assigned_actor_identity THEN
+            RAISE EXCEPTION 'Security Policy Violation: Agents cannot reassign tasks or alter task actor assignment.';
+        END IF;
+
+        IF NEW.company_id IS DISTINCT FROM OLD.company_id THEN
+            RAISE EXCEPTION 'Security Policy Violation: Agents cannot alter task company_id scope.';
+        END IF;
+
+        IF NEW.contact_id IS DISTINCT FROM OLD.contact_id THEN
+            RAISE EXCEPTION 'Security Policy Violation: Agents cannot alter task contact_id scope.';
+        END IF;
+
+        IF NEW.task_type IS DISTINCT FROM OLD.task_type THEN
+            RAISE EXCEPTION 'Security Policy Violation: Agents cannot alter task_type.';
+        END IF;
+
+        IF NEW.title IS DISTINCT FROM OLD.title THEN
+            RAISE EXCEPTION 'Security Policy Violation: Agents cannot alter task title.';
+        END IF;
+
+        IF NEW.priority IS DISTINCT FROM OLD.priority THEN
+            RAISE EXCEPTION 'Security Policy Violation: Agents cannot alter task priority.';
+        END IF;
+
+        IF NEW.due_date IS DISTINCT FROM OLD.due_date THEN
+            RAISE EXCEPTION 'Security Policy Violation: Agents cannot alter task due_date.';
+        END IF;
+
+        IF NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+            RAISE EXCEPTION 'Security Policy Violation: Agents cannot alter task created_at.';
+        END IF;
+
+        -- Automatic database timestamping on task completion
+        IF NEW.status = 'completed' AND OLD.status != 'completed' THEN
+            NEW.completed_at = clock_timestamp();
+        ELSIF NEW.status != 'completed' THEN
+            NEW.completed_at = NULL;
+        ELSIF OLD.status = 'completed' AND NEW.status = 'completed' THEN
+            IF NEW.completed_at IS DISTINCT FROM OLD.completed_at THEN
+                RAISE EXCEPTION 'Security Policy Violation: Agents cannot tamper with task completed_at timestamp.';
+            END IF;
+        END IF;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_enforce_task_governance
+    BEFORE UPDATE ON tasks
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_enforce_task_governance();
 
 -- -----------------------------------------------------------------------------
 -- Trigger Function: Trusted Database-Side Audit Log Capture
@@ -1389,15 +1494,34 @@ CREATE POLICY human_operator_select_audit_logs ON audit_logs FOR SELECT TO authe
 -- Unknown roles receive ZERO access.
 -- -----------------------------------------------------------------------------
 
--- Directory Read Access for Agents (Active non-suppressed companies & domains only)
+-- Directory Read Access for Agents (Task-scoped, active non-suppressed companies & domains only)
 CREATE POLICY agent_select_companies ON companies FOR SELECT TO authenticated 
-    USING (is_agent() AND is_suppressed = FALSE);
+    USING (
+        is_agent() AND 
+        is_suppressed = FALSE AND 
+        EXISTS (
+            SELECT 1 FROM tasks t 
+            WHERE t.assigned_actor_type = 'agent' 
+              AND t.assigned_actor_identity = current_agent_identity()
+              AND t.company_id = companies.id
+              AND t.status IN ('pending', 'in_progress')
+        )
+    );
 
 CREATE POLICY agent_select_company_domains ON company_domains FOR SELECT TO authenticated 
-    USING (is_agent());
+    USING (
+        is_agent() AND 
+        EXISTS (
+            SELECT 1 FROM tasks t 
+            WHERE t.assigned_actor_type = 'agent' 
+              AND t.assigned_actor_identity = current_agent_identity()
+              AND t.company_id = company_domains.company_id
+              AND t.status IN ('pending', 'in_progress')
+        )
+    );
 
-CREATE POLICY agent_select_suppression ON suppression_registry FOR SELECT TO authenticated 
-    USING (is_agent());
+-- Note on suppression_registry: Broad agent SELECT is removed to prevent enumeration.
+-- Subagents must use trusted helper function is_identifier_suppressed().
 
 -- Scoped Contact Access: Only non-opted-out contacts for companies/contacts assigned in tasks
 CREATE POLICY agent_select_contacts ON contacts FOR SELECT TO authenticated 
@@ -1421,12 +1545,19 @@ CREATE POLICY agent_select_campaigns ON outreach_campaigns FOR SELECT TO authent
         is_active = TRUE
     );
 
--- Research Subagent Scoped Permissions
+-- Research Subagent Scoped Permissions (Task-scoped to assigned company)
 CREATE POLICY agent_insert_research_reports ON research_reports FOR INSERT TO authenticated 
     WITH CHECK (
         is_agent() AND 
         is_agent_type('researcher') AND 
-        research_agent_identity = current_agent_identity()
+        research_agent_identity = current_agent_identity() AND
+        EXISTS (
+            SELECT 1 FROM tasks t 
+            WHERE t.assigned_actor_type = 'agent' 
+              AND t.assigned_actor_identity = current_agent_identity()
+              AND t.company_id = research_reports.company_id
+              AND t.status IN ('pending', 'in_progress')
+        )
     );
 
 CREATE POLICY agent_select_research_reports ON research_reports FOR SELECT TO authenticated 
@@ -1450,7 +1581,15 @@ CREATE POLICY agent_insert_research_findings ON research_findings FOR INSERT TO 
         EXISTS (
             SELECT 1 FROM research_reports r 
             WHERE r.id = research_findings.report_id 
+              AND r.company_id = research_findings.company_id
               AND r.research_agent_identity = current_agent_identity()
+        ) AND
+        EXISTS (
+            SELECT 1 FROM tasks t 
+            WHERE t.assigned_actor_type = 'agent' 
+              AND t.assigned_actor_identity = current_agent_identity()
+              AND t.company_id = research_findings.company_id
+              AND t.status IN ('pending', 'in_progress')
         )
     );
 
@@ -1472,7 +1611,7 @@ CREATE POLICY agent_select_research_findings ON research_findings FOR SELECT TO 
         )
     );
 
--- Qualification Subagent Scoped Permissions
+-- Qualification Subagent Scoped Permissions (Task-scoped to assigned company)
 CREATE POLICY agent_insert_lead_qualifications ON lead_qualifications FOR INSERT TO authenticated 
     WITH CHECK (
         is_agent() AND 
@@ -1481,7 +1620,14 @@ CREATE POLICY agent_insert_lead_qualifications ON lead_qualifications FOR INSERT
         evaluator_identity = current_agent_identity() AND 
         review_status = 'draft' AND 
         reviewed_by_human_id IS NULL AND 
-        reviewed_at IS NULL
+        reviewed_at IS NULL AND
+        EXISTS (
+            SELECT 1 FROM tasks t 
+            WHERE t.assigned_actor_type = 'agent' 
+              AND t.assigned_actor_identity = current_agent_identity()
+              AND t.company_id = lead_qualifications.company_id
+              AND t.status IN ('pending', 'in_progress')
+        )
     );
 
 CREATE POLICY agent_select_lead_qualifications ON lead_qualifications FOR SELECT TO authenticated 
@@ -1507,7 +1653,7 @@ CREATE POLICY agent_select_lead_qualifications ON lead_qualifications FOR SELECT
         )
     );
 
--- Outreach Drafting Subagent Scoped Permissions
+-- Outreach Drafting Subagent Scoped Permissions (Task-scoped to assigned company & contact)
 CREATE POLICY agent_insert_outreach_messages ON outreach_messages FOR INSERT TO authenticated 
     WITH CHECK (
         is_agent() AND 
@@ -1520,7 +1666,15 @@ CREATE POLICY agent_insert_outreach_messages ON outreach_messages FOR INSERT TO 
         override_reason IS NULL AND 
         override_by_human_id IS NULL AND 
         sending_status = 'draft' AND
-        proposed_commercial_model != 'strategic_revenue_sharing'
+        proposed_commercial_model != 'strategic_revenue_sharing' AND
+        EXISTS (
+            SELECT 1 FROM tasks t 
+            WHERE t.assigned_actor_type = 'agent' 
+              AND t.assigned_actor_identity = current_agent_identity()
+              AND t.company_id = outreach_messages.company_id
+              AND (t.contact_id IS NULL OR t.contact_id = outreach_messages.contact_id)
+              AND t.status IN ('pending', 'in_progress')
+        )
     );
 
 CREATE POLICY agent_select_outreach_messages ON outreach_messages FOR SELECT TO authenticated 
@@ -1538,12 +1692,20 @@ CREATE POLICY agent_select_outreach_messages ON outreach_messages FOR SELECT TO 
         )
     );
 
--- Activity Logging for Agents
+-- Activity Logging for Agents (Task-scoped to assigned company & contact)
 CREATE POLICY agent_insert_activities ON activities FOR INSERT TO authenticated 
     WITH CHECK (
         is_agent() AND 
         performed_by_actor_type = 'agent' AND 
-        performed_by_actor_identity = current_agent_identity()
+        performed_by_actor_identity = current_agent_identity() AND
+        EXISTS (
+            SELECT 1 FROM tasks t 
+            WHERE t.assigned_actor_type = 'agent' 
+              AND t.assigned_actor_identity = current_agent_identity()
+              AND t.company_id = activities.company_id
+              AND (t.contact_id IS NULL OR activities.contact_id IS NULL OR t.contact_id = activities.contact_id)
+              AND t.status IN ('pending', 'in_progress')
+        )
     );
 
 CREATE POLICY agent_select_activities ON activities FOR SELECT TO authenticated 
@@ -1589,7 +1751,7 @@ REVOKE ALL ON ALL TABLES IN SCHEMA public FROM anon, authenticated, public;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM anon, authenticated, public;
 
 -- Grant EXECUTE on trusted security and calculation helpers
-GRANT EXECUTE ON FUNCTION is_human_operator, is_admin_operator, is_agent, is_agent_type, current_agent_identity, current_actor_role, add_business_days TO authenticated;
+GRANT EXECUTE ON FUNCTION is_human_operator, is_admin_operator, is_agent, is_agent_type, current_agent_identity, current_actor_role, add_business_days, is_identifier_suppressed TO authenticated;
 
 -- Grant standard DML to authenticated role (Row Level Security narrows row access)
 GRANT SELECT, INSERT, UPDATE, DELETE ON companies, company_domains, contacts, research_reports, research_findings, lead_qualifications, outreach_campaigns, outreach_messages, conversations, conversation_messages, activities, tasks TO authenticated;
