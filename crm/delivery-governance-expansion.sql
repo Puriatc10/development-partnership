@@ -352,40 +352,54 @@ CREATE TRIGGER trg_project_change_requests_updated_at
 CREATE OR REPLACE FUNCTION fn_enforce_partnership_status_transitions()
 RETURNS TRIGGER AS $$
 BEGIN
-    IF OLD IS NOT NULL AND (NEW.partnership_stage != OLD.partnership_stage OR NEW.agreement_status != OLD.agreement_status) THEN
-        -- Only human operators can transition partnership stages
-        IF is_agent() THEN
-            RAISE EXCEPTION 'Security Policy Violation: Agents are strictly prohibited from modifying partnership stages.';
+    -- Only human operators can create or modify partnerships
+    IF is_agent() THEN
+        RAISE EXCEPTION 'Security Policy Violation: Agents are strictly prohibited from creating or modifying partnerships.';
+    END IF;
+
+    -- Disqualified company check: Cannot create or transition partnership if company is disqualified
+    IF TG_OP = 'INSERT' OR (NEW.partnership_stage IN ('onboarding', 'active')) THEN
+        IF EXISTS (
+            SELECT 1 FROM companies c 
+            WHERE c.id = NEW.company_id 
+              AND (c.qualification_tier = 'disqualified' OR c.lifecycle_stage = 'disqualified')
+        ) THEN
+            RAISE EXCEPTION 'Compliance Violation: Cannot create or activate partnership for a disqualified company.';
+        END IF;
+    END IF;
+
+    -- Initial state validation on INSERT
+    IF TG_OP = 'INSERT' THEN
+        -- New partnerships must initialize in onboarding
+        IF NEW.partnership_stage != 'onboarding' THEN
+            RAISE EXCEPTION 'Lifecycle Violation: New partnerships must initialize in onboarding stage. Direct insertion into % is prohibited.', NEW.partnership_stage;
         END IF;
 
-        -- Cannot transition to active unless agreement is signed_active
-        IF NEW.partnership_stage = 'active' THEN
-            IF NEW.agreement_status != 'signed_active' THEN
-                RAISE EXCEPTION 'Governance Violation: Partnership cannot transition to active without signed_active agreement status.';
-            END IF;
-            IF NEW.signed_agreement_url IS NULL OR NEW.effective_date IS NULL THEN
-                RAISE EXCEPTION 'Governance Violation: Active partnership requires signed_agreement_url and effective_date.';
-            END IF;
+        -- Initial agreement status cannot be expired
+        IF NEW.agreement_status = 'expired' THEN
+            RAISE EXCEPTION 'Lifecycle Violation: New partnerships cannot initialize with expired agreement status.';
         END IF;
 
-        -- Disqualified company check: Cannot enter active or onboarding stage if company is disqualified
-        IF NEW.partnership_stage IN ('onboarding', 'active') THEN
-            IF EXISTS (
-                SELECT 1 FROM companies c 
-                WHERE c.id = NEW.company_id 
-                  AND (c.qualification_tier = 'disqualified' OR c.lifecycle_stage = 'disqualified')
-            ) THEN
-                RAISE EXCEPTION 'Compliance Violation: Cannot activate partnership for a disqualified company.';
+    ELSIF TG_OP = 'UPDATE' THEN
+        IF (NEW.partnership_stage != OLD.partnership_stage OR NEW.agreement_status != OLD.agreement_status) THEN
+            -- Cannot transition to active unless agreement is signed_active
+            IF NEW.partnership_stage = 'active' THEN
+                IF NEW.agreement_status != 'signed_active' THEN
+                    RAISE EXCEPTION 'Governance Violation: Partnership cannot transition to active without signed_active agreement status.';
+                END IF;
+                IF NEW.signed_agreement_url IS NULL OR NEW.effective_date IS NULL THEN
+                    RAISE EXCEPTION 'Governance Violation: Active partnership requires signed_agreement_url and effective_date.';
+                END IF;
             END IF;
-        END IF;
 
-        -- Terminated partnerships cannot be reopened without an amended or signed agreement by admin
-        IF OLD.partnership_stage = 'terminated' AND NEW.partnership_stage != 'terminated' THEN
-            IF NOT is_admin_operator() THEN
-                RAISE EXCEPTION 'Security Policy Violation: Only admin or founder roles can reactivate a terminated partnership.';
-            END IF;
-            IF NEW.agreement_status NOT IN ('signed_active', 'amended') THEN
-                RAISE EXCEPTION 'Governance Violation: Reopening terminated partnership requires amended or signed_active agreement status.';
+            -- Terminated partnerships cannot be reopened without an amended or signed agreement by admin
+            IF OLD.partnership_stage = 'terminated' AND NEW.partnership_stage != 'terminated' THEN
+                IF NOT is_admin_operator() THEN
+                    RAISE EXCEPTION 'Security Policy Violation: Only admin or founder roles can reactivate a terminated partnership.';
+                END IF;
+                IF NEW.agreement_status NOT IN ('signed_active', 'amended') THEN
+                    RAISE EXCEPTION 'Governance Violation: Reopening terminated partnership requires amended or signed_active agreement status.';
+                END IF;
             END IF;
         END IF;
     END IF;
@@ -395,7 +409,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER trg_enforce_partnership_status
-    BEFORE UPDATE OF partnership_stage, agreement_status ON partnerships
+    BEFORE INSERT OR UPDATE ON partnerships
     FOR EACH ROW
     EXECUTE FUNCTION fn_enforce_partnership_status_transitions();
 
@@ -924,69 +938,133 @@ CREATE TRIGGER trg_set_milestone_inspection_deadline
 CREATE OR REPLACE FUNCTION fn_enforce_milestone_governance()
 RETURNS TRIGGER AS $$
 BEGIN
-    -- Enforce valid status transitions
-    IF OLD IS NOT NULL AND NEW.status != OLD.status THEN
-        -- Status progression rules
-        CASE OLD.status
-            WHEN 'pending_delivery' THEN
-                IF NEW.status NOT IN ('submitted_for_review') THEN
-                    RAISE EXCEPTION 'Lifecycle Violation: Pending milestones must be submitted_for_review before acceptance, revisions, or dispute.';
-                END IF;
-
-            WHEN 'submitted_for_review' THEN
-                IF NEW.status NOT IN ('accepted', 'revisions_requested', 'disputed', 'pending_delivery') THEN
-                    RAISE EXCEPTION 'Lifecycle Violation: Milestones under review can only transition to accepted, revisions_requested, disputed, or pending_delivery.';
-                END IF;
-
-            WHEN 'revisions_requested' THEN
-                IF NEW.status NOT IN ('submitted_for_review', 'disputed') THEN
-                    RAISE EXCEPTION 'Lifecycle Violation: Revision-requested milestones must be re-submitted_for_review before acceptance.';
-                END IF;
-
-            WHEN 'disputed' THEN
-                IF NEW.status = 'accepted' THEN
-                    IF NEW.acceptance_type != 'human_operator_override' THEN
-                        RAISE EXCEPTION 'Governance Violation: Disputed milestones can only be accepted via authorized human operator override.';
-                    END IF;
-                ELSIF NEW.status NOT IN ('submitted_for_review', 'pending_delivery') THEN
-                    RAISE EXCEPTION 'Lifecycle Violation: Disputed milestones can only transition to submitted_for_review, pending_delivery, or override acceptance.';
-                END IF;
-
-            WHEN 'accepted' THEN
-                RAISE EXCEPTION 'Lifecycle Violation: Accepted milestones are final and cannot be transitioned.';
-        END CASE;
-
-        -- Record delivered timestamp on submission for review
-        IF NEW.status = 'submitted_for_review' AND OLD.status != 'submitted_for_review' THEN
-            IF NEW.delivered_at IS NULL THEN
-                NEW.delivered_at = clock_timestamp();
-            END IF;
+    -- 1. Initial State Integrity on INSERT
+    IF TG_OP = 'INSERT' THEN
+        IF is_agent() THEN
+            RAISE EXCEPTION 'Security Policy Violation: Agents are strictly prohibited from creating project milestones.';
         END IF;
 
-        -- Increment revision rounds used when transitioning to revisions_requested
-        IF NEW.status = 'revisions_requested' AND OLD.status != 'revisions_requested' THEN
-            IF OLD.revision_rounds_used >= OLD.max_in_scope_revisions THEN
-                RAISE EXCEPTION 'Scope Boundary Violation: In-scope revision limit of % rounds reached. Additional revisions require an authorized Change Request.', OLD.max_in_scope_revisions;
-            END IF;
-            NEW.revision_rounds_used = OLD.revision_rounds_used + 1;
+        IF NEW.status != 'pending_delivery' THEN
+            RAISE EXCEPTION 'Lifecycle Violation: New project milestones must initialize in pending_delivery status. Direct insertion into % is prohibited.', NEW.status;
         END IF;
 
-        -- Record acceptance attribution
-        IF NEW.status = 'accepted' AND OLD.status != 'accepted' THEN
-            IF NEW.accepted_at IS NULL THEN
-                NEW.accepted_at = clock_timestamp();
-            END IF;
-            IF NEW.acceptance_type IS NULL THEN
-                NEW.acceptance_type = 'explicit_partner_signoff';
-            END IF;
+        IF NEW.accepted_at IS NOT NULL OR 
+           NEW.acceptance_type IS NOT NULL OR 
+           NEW.accepted_by_contact_id IS NOT NULL OR 
+           NEW.accepted_by_human_id IS NOT NULL OR
+           NEW.acceptance_notes IS NOT NULL THEN
+            RAISE EXCEPTION 'Integrity Violation: New milestones cannot be inserted with acceptance metadata.';
+        END IF;
+
+        IF NEW.delivered_at IS NOT NULL THEN
+            RAISE EXCEPTION 'Integrity Violation: New milestones cannot be inserted with delivered_at timestamp.';
+        END IF;
+
+        IF NEW.revision_rounds_used != 0 THEN
+            RAISE EXCEPTION 'Integrity Violation: New milestones must initialize with revision_rounds_used = 0.';
         END IF;
     END IF;
 
-    -- Protect acceptance metadata against modification on already accepted milestones
-    IF OLD IS NOT NULL AND OLD.status = 'accepted' AND NEW.status = 'accepted' THEN
-        IF NEW.accepted_at IS DISTINCT FROM OLD.accepted_at OR 
-           NEW.acceptance_type IS DISTINCT FROM OLD.acceptance_type THEN
-            RAISE EXCEPTION 'Security Policy Violation: Cannot alter acceptance metadata on an already accepted milestone.';
+    -- 2. Acceptance Immutability & Status Governance on UPDATE
+    IF TG_OP = 'UPDATE' THEN
+        -- If milestone is already accepted, it is terminal and immutable
+        IF OLD.status = 'accepted' THEN
+            IF NEW.status != 'accepted' THEN
+                RAISE EXCEPTION 'Lifecycle Violation: Accepted milestones are final and cannot be transitioned.';
+            END IF;
+
+            -- Protect acceptance metadata against modification on already accepted milestones
+            IF NEW.accepted_at IS DISTINCT FROM OLD.accepted_at OR 
+               NEW.acceptance_type IS DISTINCT FROM OLD.acceptance_type OR
+               NEW.accepted_by_contact_id IS DISTINCT FROM OLD.accepted_by_contact_id OR
+               NEW.accepted_by_human_id IS DISTINCT FROM OLD.accepted_by_human_id OR
+               NEW.acceptance_notes IS DISTINCT FROM OLD.acceptance_notes THEN
+                RAISE EXCEPTION 'Security Policy Violation: Cannot alter acceptance metadata on an already accepted milestone.';
+            END IF;
+        END IF;
+
+        -- Status progression rules when status is modified
+        IF NEW.status != OLD.status THEN
+            CASE OLD.status
+                WHEN 'pending_delivery' THEN
+                    IF NEW.status NOT IN ('submitted_for_review') THEN
+                        RAISE EXCEPTION 'Lifecycle Violation: Pending milestones must be submitted_for_review before acceptance, revisions, or dispute.';
+                    END IF;
+
+                WHEN 'submitted_for_review' THEN
+                    IF NEW.status NOT IN ('accepted', 'revisions_requested', 'disputed', 'pending_delivery') THEN
+                        RAISE EXCEPTION 'Lifecycle Violation: Milestones under review can only transition to accepted, revisions_requested, disputed, or pending_delivery.';
+                    END IF;
+
+                WHEN 'revisions_requested' THEN
+                    IF NEW.status NOT IN ('submitted_for_review', 'disputed') THEN
+                        RAISE EXCEPTION 'Lifecycle Violation: Revision-requested milestones must be re-submitted_for_review before acceptance.';
+                    END IF;
+
+                WHEN 'disputed' THEN
+                    IF NEW.status = 'accepted' THEN
+                        IF NEW.acceptance_type != 'human_operator_override' THEN
+                            RAISE EXCEPTION 'Governance Violation: Disputed milestones can only be accepted via authorized human operator override.';
+                        END IF;
+                        IF NEW.acceptance_notes IS NULL OR TRIM(NEW.acceptance_notes) = '' THEN
+                            RAISE EXCEPTION 'Governance Violation: Disputed milestone override acceptance requires non-empty acceptance_notes.';
+                        END IF;
+                    ELSIF NEW.status NOT IN ('submitted_for_review', 'pending_delivery') THEN
+                        RAISE EXCEPTION 'Lifecycle Violation: Disputed milestones can only transition to submitted_for_review, pending_delivery, or override acceptance.';
+                    END IF;
+
+                WHEN 'accepted' THEN
+                    RAISE EXCEPTION 'Lifecycle Violation: Accepted milestones are final and cannot be transitioned.';
+            END CASE;
+
+            -- Record delivered timestamp on submission for review
+            IF NEW.status = 'submitted_for_review' AND OLD.status != 'submitted_for_review' THEN
+                IF NEW.delivered_at IS NULL THEN
+                    NEW.delivered_at = clock_timestamp();
+                END IF;
+            END IF;
+
+            -- Increment revision rounds used when transitioning to revisions_requested
+            IF NEW.status = 'revisions_requested' AND OLD.status != 'revisions_requested' THEN
+                IF OLD.revision_rounds_used >= OLD.max_in_scope_revisions THEN
+                    RAISE EXCEPTION 'Scope Boundary Violation: In-scope revision limit of % rounds reached. Additional revisions require an authorized Change Request.', OLD.max_in_scope_revisions;
+                END IF;
+                NEW.revision_rounds_used = OLD.revision_rounds_used + 1;
+            END IF;
+
+            -- Record acceptance attribution when transitioning to accepted
+            IF NEW.status = 'accepted' AND OLD.status != 'accepted' THEN
+                IF is_agent() THEN
+                    RAISE EXCEPTION 'Security Policy Violation: Agents are strictly prohibited from accepting milestones.';
+                END IF;
+
+                IF NOT is_human_operator() THEN
+                    RAISE EXCEPTION 'Security Policy Violation: Only authorized human operators can record milestone acceptance.';
+                END IF;
+
+                IF auth.uid() IS NULL THEN
+                    RAISE EXCEPTION 'Security Policy Violation: Milestone acceptance requires an authenticated session with non-null auth.uid().';
+                END IF;
+
+                NEW.accepted_at = clock_timestamp();
+                NEW.accepted_by_human_id = auth.uid();
+
+                IF NEW.acceptance_type IS NULL THEN
+                    NEW.acceptance_type = 'explicit_partner_signoff';
+                END IF;
+            END IF;
+        ELSE
+            -- Status is NOT changing.
+            -- If milestone is not in 'accepted' status, prevent unauthorized injection of acceptance metadata
+            IF NEW.status != 'accepted' THEN
+                IF NEW.accepted_at IS NOT NULL OR 
+                   NEW.acceptance_type IS NOT NULL OR 
+                   NEW.accepted_by_contact_id IS NOT NULL OR 
+                   NEW.accepted_by_human_id IS NOT NULL OR
+                   NEW.acceptance_notes IS NOT NULL THEN
+                    RAISE EXCEPTION 'Security Policy Violation: Acceptance metadata cannot be attached to a non-accepted milestone.';
+                END IF;
+            END IF;
         END IF;
     END IF;
 
@@ -995,7 +1073,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER trg_enforce_milestone_governance
-    BEFORE UPDATE OF status ON project_milestones
+    BEFORE INSERT OR UPDATE ON project_milestones
     FOR EACH ROW
     EXECUTE FUNCTION fn_enforce_milestone_governance();
 
@@ -1007,7 +1085,22 @@ CREATE TRIGGER trg_enforce_milestone_governance
 CREATE OR REPLACE FUNCTION fn_enforce_change_request_governance()
 RETURNS TRIGGER AS $$
 BEGIN
-    -- Handle CR Technical Lead Feasibility
+    -- 1. Initial State Integrity on INSERT
+    IF TG_OP = 'INSERT' THEN
+        IF is_agent() THEN
+            RAISE EXCEPTION 'Security Policy Violation: Agents are strictly prohibited from creating Change Requests.';
+        END IF;
+
+        IF NEW.status != 'draft' THEN
+            RAISE EXCEPTION 'Lifecycle Violation: New Change Requests must initialize in draft status. Direct insertion into % is prohibited.', NEW.status;
+        END IF;
+
+        IF NEW.partner_approved_by_human_id IS NOT NULL OR NEW.decision_at IS NOT NULL THEN
+            RAISE EXCEPTION 'Integrity Violation: New draft Change Requests cannot be inserted with partner decision attribution.';
+        END IF;
+    END IF;
+
+    -- 2. Technical Lead Feasibility Evaluation
     IF NEW.feasibility_status IN ('approved_by_lead', 'rejected_unfeasible') AND 
        (OLD IS NULL OR OLD.feasibility_status != NEW.feasibility_status) THEN
 
@@ -1039,8 +1132,8 @@ BEGIN
         END IF;
     END IF;
 
-    -- Change Request State Transitions
-    IF OLD IS NOT NULL AND NEW.status != OLD.status THEN
+    -- 3. Change Request State Transitions on UPDATE
+    IF TG_OP = 'UPDATE' AND NEW.status != OLD.status THEN
         CASE OLD.status
             WHEN 'draft' THEN
                 IF NEW.status NOT IN ('submitted_to_partner', 'cancelled') THEN
@@ -1065,8 +1158,8 @@ BEGIN
         END CASE;
     END IF;
 
-    -- Prevent modification of partner approval identity, timestamp, or approved content once approved
-    IF OLD IS NOT NULL AND OLD.status = 'approved_by_partner' AND NEW.status = 'approved_by_partner' THEN
+    -- 4. Prevent modification of partner approval identity, timestamp, or approved content once approved
+    IF TG_OP = 'UPDATE' AND OLD.status = 'approved_by_partner' AND NEW.status = 'approved_by_partner' THEN
         IF NEW.partner_approved_by_human_id IS DISTINCT FROM OLD.partner_approved_by_human_id OR 
            NEW.decision_at IS DISTINCT FROM OLD.decision_at THEN
             RAISE EXCEPTION 'Security Policy Violation: Cannot alter partner approval identity or timestamp of an approved Change Request.';
@@ -1084,8 +1177,8 @@ BEGIN
         END IF;
     END IF;
 
-    -- Handle partner approval of Change Request
-    IF NEW.status = 'approved_by_partner' AND (OLD IS NULL OR OLD.status != 'approved_by_partner') THEN
+    -- 5. Handle partner approval of Change Request
+    IF TG_OP = 'UPDATE' AND NEW.status = 'approved_by_partner' AND OLD.status != 'approved_by_partner' THEN
         IF is_agent() THEN
             RAISE EXCEPTION 'Security Policy Violation: Agents are strictly prohibited from recording partner Change Request approval.';
         END IF;
@@ -1119,8 +1212,8 @@ BEGIN
         END IF;
     END IF;
 
-    -- Handle partner rejection of Change Request
-    IF NEW.status = 'rejected_by_partner' AND (OLD IS NULL OR OLD.status != 'rejected_by_partner') THEN
+    -- 6. Handle partner rejection of Change Request
+    IF TG_OP = 'UPDATE' AND NEW.status = 'rejected_by_partner' AND OLD.status != 'rejected_by_partner' THEN
         IF NEW.decision_at IS NULL THEN
             NEW.decision_at = clock_timestamp();
         END IF;

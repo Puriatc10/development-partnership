@@ -1,7 +1,7 @@
 # Phase 2.1 — Batch B: State Machines & Transition Integrity Review
 
-**Document Version:** 1.0.0  
-**Phase:** 2.1 — Batch B: Lifecycle State Machines & Transition Integrity Hardening  
+**Document Version:** 1.1.0  
+**Phase:** 2.1 — Batch B: Lifecycle State Machines & Transition Integrity Hardening (Including Insert-Path Closure)  
 **Workspace:** `development-partnership/`  
 **System Role:** Senior PostgreSQL Architect, Database Integrity Engineer, & Governance Auditor  
 **Target Platform:** PostgreSQL 15+ (Supabase Native)  
@@ -420,10 +420,96 @@ When a live staging Supabase instance is provisioned:
 
 ---
 
-## 9. Final Disposition
+## 9. Final Insert-Path Integrity Closure
 
-With all 23 lifecycle integrity concerns addressed, table constraints and triggers implemented, privileges revoked, and static syntax verified:
+During independent post-implementation review of Batch B (`d729a6f`), three concrete INSERT-path and acceptance-metadata bypass vectors were identified in `crm/delivery-governance-expansion.sql`. These vectors have been formally closed.
+
+### 9.1. Identified Issues & Exact Corrections
+
+#### 1. Partnership Initial-State Integrity (`partnerships`)
+- **Vulnerability:** `trg_enforce_partnership_status` was declared as `BEFORE UPDATE OF partnership_stage, agreement_status ON partnerships`. It did not fire on INSERT, allowing direct insertion into `active`, `terminated`, or bypassing onboarding prerequisites and disqualified company checks. Furthermore, the function assumed `OLD` was non-null.
+- **Correction:** 
+  - Redefined trigger event to `BEFORE INSERT OR UPDATE ON partnerships`.
+  - Added explicit `TG_OP = 'INSERT'` handling in `fn_enforce_partnership_status_transitions()`:
+    - Enforces that new partnerships must initialize in `onboarding` (`NEW.partnership_stage != 'onboarding'` raises exception).
+    - Prohibits initializing with expired agreement status (`NEW.agreement_status = 'expired'`).
+    - Enforces that companies marked `disqualified` cannot have partnerships created (`TG_OP = 'INSERT'`).
+    - Strictly blocks autonomous agents from creating or modifying partnerships (`is_agent()`).
+  - Preserved existing activation prerequisites (`signed_active`, URL, effective date, qualification) and admin-only reactivation rules for `terminated` partnerships on `UPDATE`.
+
+#### 2. Milestone Initial-State and Acceptance Integrity (`project_milestones`)
+- **Vulnerability:** `trg_enforce_milestone_governance` was declared as `BEFORE UPDATE OF status ON project_milestones`. On INSERT, the trigger did not fire, allowing milestones to be directly inserted in `accepted` or `disputed` states with arbitrary acceptance timestamps. On UPDATE, updating acceptance metadata (`accepted_at`, `acceptance_type`, `accepted_by_human_id`, `accepted_by_contact_id`, `acceptance_notes`) without altering `status` completely bypassed the immutability guard.
+- **Correction:**
+  - Redefined trigger event to `BEFORE INSERT OR UPDATE ON project_milestones`.
+  - Added explicit `TG_OP = 'INSERT'` validation in `fn_enforce_milestone_governance()`:
+    - Enforces that new milestones must initialize in `pending_delivery` (`NEW.status != 'pending_delivery'` raises exception).
+    - Blocks inserting new milestones with acceptance attribution (`accepted_at`, `acceptance_type`, `accepted_by_contact_id`, `accepted_by_human_id`, `acceptance_notes`).
+    - Blocks inserting with `delivered_at` or non-zero `revision_rounds_used`.
+    - Strictly blocks agents from creating milestones.
+  - Hardened `TG_OP = 'UPDATE'` validation:
+    - If `OLD.status = 'accepted'`, locks status as terminal and protects all acceptance fields (`accepted_at`, `acceptance_type`, `accepted_by_contact_id`, `accepted_by_human_id`, `acceptance_notes`) against ANY modification, regardless of whether `status` is specified in the UPDATE statement.
+    - If `NEW.status != 'accepted'`, prohibits injecting acceptance metadata on non-accepted milestones.
+    - Acceptance from `submitted_for_review` or `disputed` requires an authenticated human operator (`auth.uid() IS NOT NULL`, `is_human_operator()`), auto-generates `accepted_at = clock_timestamp()` and `accepted_by_human_id = auth.uid()`.
+    - Disputed milestone override acceptance strictly requires `human_operator_override` and non-empty `acceptance_notes`.
+
+#### 3. Change Request Initial-State Integrity (`project_change_requests`)
+- **Vulnerability:** Although `trg_enforce_change_request_governance` ran on `BEFORE INSERT OR UPDATE`, the transition check skipped when `OLD` was NULL, allowing direct insertion into `approved_by_partner` or `rejected_by_partner`, bypassing the Technical Lead feasibility sign-off and partner approval workflows.
+- **Correction:**
+  - Added explicit `TG_OP = 'INSERT'` validation in `fn_enforce_change_request_governance()`:
+    - Enforces that new Change Requests must initialize in `draft` (`NEW.status != 'draft'` raises exception).
+    - Blocks inserting new Change Requests with partner approval attribution (`partner_approved_by_human_id`, `decision_at`).
+    - Strictly blocks agents from creating Change Requests.
+  - Scoped partner approval handling (`NEW.status = 'approved_by_partner'`) and rejection handling (`NEW.status = 'rejected_by_partner'`) strictly to `TG_OP = 'UPDATE'` transitions from `submitted_to_partner`.
+  - Preserved mandatory Technical Lead feasibility approval (`feasibility_status = 'approved_by_lead'`), human operator identity attribution, and immutability of approved commercial terms and scope attributes.
+
+### 9.2. Updated Trigger Definitions
+
+```sql
+-- 1. Partnerships: Full Lifecycle & Insert Integrity
+CREATE TRIGGER trg_enforce_partnership_status
+    BEFORE INSERT OR UPDATE ON partnerships
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_enforce_partnership_status_transitions();
+
+-- 2. Project Milestones: Full Lifecycle, Insert, & Acceptance Immutability
+CREATE TRIGGER trg_enforce_milestone_governance
+    BEFORE INSERT OR UPDATE ON project_milestones
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_enforce_milestone_governance();
+
+-- 3. Project Change Requests: Full Lifecycle, Insert, & Scope Immutability
+CREATE TRIGGER trg_enforce_change_request_governance
+    BEFORE INSERT OR UPDATE ON project_change_requests
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_enforce_change_request_governance();
+```
+
+### 9.3. Static Validation Results
+
+| Test / Metric | `crm/schema.sql` | `crm/delivery-governance-expansion.sql` | Status |
+| :--- | :---: | :---: | :---: |
+| **Dollar-Quote (`$$`) Pairs** | 21 pairs (42 delimiters) | 9 pairs (18 delimiters) | **PASS** |
+| **PL/pgSQL Block Integrity** | 21 functions verified (100% matched `IF`/`END IF`) | 9 functions verified (100% matched `IF`/`END IF`) | **PASS** |
+| **Top-Level Statements Parsed** | 191 statements | 70 statements | **PASS** |
+| **Trigger Mappings** | 14 triggers | 11 triggers | **PASS** |
+| **Insert-Path Protection** | Validated via AST inspection | Validated via AST inspection | **PASS** |
+| **Metadata Immutability Guards** | Validated via AST inspection | Validated via AST inspection | **PASS** |
+
+### 9.4. Remaining Runtime Validation Requirements
+
+When a live staging Supabase instance is provisioned:
+1. Verify that `INSERT INTO partnerships (partnership_stage) VALUES ('active')` throws a PostgreSQL exception.
+2. Verify that `INSERT INTO project_milestones (status) VALUES ('accepted')` throws a PostgreSQL exception.
+3. Verify that `UPDATE project_milestones SET accepted_at = now() WHERE status = 'accepted'` throws an exception even when `status` is omitted from the UPDATE statement.
+4. Verify that `INSERT INTO project_change_requests (status) VALUES ('approved_by_partner')` throws a PostgreSQL exception.
+5. Verify that valid progressions (`onboarding` -> `active`, `pending_delivery` -> `submitted_for_review` -> `accepted`, `draft` -> `submitted_to_partner` -> `approved_by_partner`) succeed under authenticated human operator sessions.
+
+---
+
+## 10. Final Disposition
+
+With all 23 lifecycle integrity concerns and all 3 insert-path/acceptance-metadata bypasses closed, validated statically, and documented:
 
 ### **BATCH B — READY TO CLOSE**
 
-All lifecycle state machines across the CRM and Delivery governance schema are hardened, defensible, and aligned with operational business policy. No further changes are required for Batch B.
+All lifecycle state machines and insert-path protections across the CRM and Delivery governance schema are hardened, immutable, and strictly aligned with operational business policy. Batch B is complete.
