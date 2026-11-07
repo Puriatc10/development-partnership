@@ -347,6 +347,59 @@ CREATE TRIGGER trg_project_change_requests_updated_at
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
+-- Trigger Function: Enforce Partnership Lifecycle & Agreement Execution Gates
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fn_enforce_partnership_status_transitions()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF OLD IS NOT NULL AND (NEW.partnership_stage != OLD.partnership_stage OR NEW.agreement_status != OLD.agreement_status) THEN
+        -- Only human operators can transition partnership stages
+        IF is_agent() THEN
+            RAISE EXCEPTION 'Security Policy Violation: Agents are strictly prohibited from modifying partnership stages.';
+        END IF;
+
+        -- Cannot transition to active unless agreement is signed_active
+        IF NEW.partnership_stage = 'active' THEN
+            IF NEW.agreement_status != 'signed_active' THEN
+                RAISE EXCEPTION 'Governance Violation: Partnership cannot transition to active without signed_active agreement status.';
+            END IF;
+            IF NEW.signed_agreement_url IS NULL OR NEW.effective_date IS NULL THEN
+                RAISE EXCEPTION 'Governance Violation: Active partnership requires signed_agreement_url and effective_date.';
+            END IF;
+        END IF;
+
+        -- Disqualified company check: Cannot enter active or onboarding stage if company is disqualified
+        IF NEW.partnership_stage IN ('onboarding', 'active') THEN
+            IF EXISTS (
+                SELECT 1 FROM companies c 
+                WHERE c.id = NEW.company_id 
+                  AND (c.qualification_tier = 'disqualified' OR c.lifecycle_stage = 'disqualified')
+            ) THEN
+                RAISE EXCEPTION 'Compliance Violation: Cannot activate partnership for a disqualified company.';
+            END IF;
+        END IF;
+
+        -- Terminated partnerships cannot be reopened without an amended or signed agreement by admin
+        IF OLD.partnership_stage = 'terminated' AND NEW.partnership_stage != 'terminated' THEN
+            IF NOT is_admin_operator() THEN
+                RAISE EXCEPTION 'Security Policy Violation: Only admin or founder roles can reactivate a terminated partnership.';
+            END IF;
+            IF NEW.agreement_status NOT IN ('signed_active', 'amended') THEN
+                RAISE EXCEPTION 'Governance Violation: Reopening terminated partnership requires amended or signed_active agreement status.';
+            END IF;
+        END IF;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_enforce_partnership_status
+    BEFORE UPDATE OF partnership_stage, agreement_status ON partnerships
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_enforce_partnership_status_transitions();
+
+-- -----------------------------------------------------------------------------
 -- Trigger Function: Enforce Secure Payment Confirmation & Privileged Reversal
 -- Enforces:
 -- 1. Deposit and Final payment confirmation require authenticated human operator (auth.uid() IS NOT NULL).
@@ -688,7 +741,8 @@ CREATE TRIGGER trg_enforce_project_delivery_auth
 CREATE OR REPLACE FUNCTION fn_enforce_project_status_transitions()
 RETURNS TRIGGER AS $$
 DECLARE
-    unaccepted_milestones_count INT;
+    v_total_milestones INT;
+    v_accepted_milestones INT;
 BEGIN
     IF OLD IS NULL THEN
         -- Initial insert status must be scoping or feasibility_review
@@ -711,8 +765,11 @@ BEGIN
         RAISE EXCEPTION 'Lifecycle Violation: Closed projects are terminal and cannot be transitioned.';
     END IF;
 
-    -- Cancellation is allowed from any active non-terminal state
+    -- Cancellation rules
     IF NEW.status = 'cancelled' THEN
+        IF OLD.status IN ('completed', 'warranty_active', 'closed') THEN
+            RAISE EXCEPTION 'Lifecycle Violation: Completed, warranty, or closed projects cannot be cancelled directly.';
+        END IF;
         RETURN NEW;
     END IF;
 
@@ -742,6 +799,15 @@ BEGIN
 
         WHEN 'deposit_pending' THEN
             IF NEW.status = 'in_progress' THEN
+                -- Partnership prerequisite check
+                IF EXISTS (
+                    SELECT 1 FROM partnerships part 
+                    WHERE part.id = NEW.partnership_id 
+                      AND (part.agreement_status != 'signed_active' OR part.partnership_stage IN ('suspended', 'terminated'))
+                ) THEN
+                    RAISE EXCEPTION 'Partnership Gate Violation: Project cannot enter in_progress while partnership agreement is unexecuted, suspended, or terminated.';
+                END IF;
+
                 IF NEW.feasibility_status != 'approved_by_lead' THEN
                     RAISE EXCEPTION 'Prerequisite Violation: in_progress requires Lead Feasibility approval.';
                 END IF;
@@ -762,13 +828,18 @@ BEGIN
 
         WHEN 'in_acceptance_review' THEN
             IF NEW.status = 'completed' THEN
-                -- Verify that all project milestones have been accepted
-                SELECT COUNT(*) INTO unaccepted_milestones_count
+                -- Verify milestone completion (zero milestones prohibited)
+                SELECT COUNT(*), COUNT(*) FILTER (WHERE status = 'accepted')
+                INTO v_total_milestones, v_accepted_milestones
                 FROM project_milestones
-                WHERE project_id = NEW.id AND status != 'accepted';
+                WHERE project_id = NEW.id;
 
-                IF unaccepted_milestones_count > 0 THEN
-                    RAISE EXCEPTION 'Acceptance Violation: Cannot mark project completed while % milestones remain unaccepted.', unaccepted_milestones_count;
+                IF v_total_milestones = 0 THEN
+                    RAISE EXCEPTION 'Acceptance Violation: Cannot mark project completed with zero milestones. At least one accepted milestone deliverable is required.';
+                END IF;
+
+                IF v_accepted_milestones < v_total_milestones THEN
+                    RAISE EXCEPTION 'Acceptance Violation: Cannot mark project completed while % of % milestones remain unaccepted.', (v_total_milestones - v_accepted_milestones), v_total_milestones;
                 END IF;
             ELSIF NEW.status = 'in_progress' THEN
                 -- Allowed if revisions or rework are underway
@@ -791,10 +862,10 @@ BEGIN
             RAISE EXCEPTION 'Lifecycle Violation: Unknown or unsupported project status transition from % to %.', OLD.status, NEW.status;
     END CASE;
 
-    -- Financial Closeout Requirement: Transition to 'closed' requires confirmed final payment
+    -- Financial Closeout Requirement: Transition to 'closed' requires confirmed final payment and human actor
     IF NEW.status = 'closed' THEN
-        IF NEW.final_payment_confirmed != TRUE THEN
-            RAISE EXCEPTION 'Financial Gate Violation: Projects cannot be closed without confirmed final payment (final_payment_confirmed = TRUE).';
+        IF NEW.final_payment_confirmed != TRUE OR NEW.final_payment_confirmed_by_human_id IS NULL THEN
+            RAISE EXCEPTION 'Financial Gate Violation: Projects cannot be closed without confirmed final payment and confirmed actor attribution.';
         END IF;
     END IF;
 
@@ -855,10 +926,40 @@ RETURNS TRIGGER AS $$
 BEGIN
     -- Enforce valid status transitions
     IF OLD IS NOT NULL AND NEW.status != OLD.status THEN
-        -- Cannot accept a disputed or revision-requested milestone via automatic expiry
-        IF OLD.status IN ('disputed', 'revisions_requested') AND NEW.status = 'accepted' THEN
-            IF NEW.acceptance_type = 'automatic_window_expiry' THEN
-                RAISE EXCEPTION 'Governance Violation: Disputed or revision-requested milestones cannot be accepted via automatic window expiry. Requires explicit sign-off.';
+        -- Status progression rules
+        CASE OLD.status
+            WHEN 'pending_delivery' THEN
+                IF NEW.status NOT IN ('submitted_for_review') THEN
+                    RAISE EXCEPTION 'Lifecycle Violation: Pending milestones must be submitted_for_review before acceptance, revisions, or dispute.';
+                END IF;
+
+            WHEN 'submitted_for_review' THEN
+                IF NEW.status NOT IN ('accepted', 'revisions_requested', 'disputed', 'pending_delivery') THEN
+                    RAISE EXCEPTION 'Lifecycle Violation: Milestones under review can only transition to accepted, revisions_requested, disputed, or pending_delivery.';
+                END IF;
+
+            WHEN 'revisions_requested' THEN
+                IF NEW.status NOT IN ('submitted_for_review', 'disputed') THEN
+                    RAISE EXCEPTION 'Lifecycle Violation: Revision-requested milestones must be re-submitted_for_review before acceptance.';
+                END IF;
+
+            WHEN 'disputed' THEN
+                IF NEW.status = 'accepted' THEN
+                    IF NEW.acceptance_type != 'human_operator_override' THEN
+                        RAISE EXCEPTION 'Governance Violation: Disputed milestones can only be accepted via authorized human operator override.';
+                    END IF;
+                ELSIF NEW.status NOT IN ('submitted_for_review', 'pending_delivery') THEN
+                    RAISE EXCEPTION 'Lifecycle Violation: Disputed milestones can only transition to submitted_for_review, pending_delivery, or override acceptance.';
+                END IF;
+
+            WHEN 'accepted' THEN
+                RAISE EXCEPTION 'Lifecycle Violation: Accepted milestones are final and cannot be transitioned.';
+        END CASE;
+
+        -- Record delivered timestamp on submission for review
+        IF NEW.status = 'submitted_for_review' AND OLD.status != 'submitted_for_review' THEN
+            IF NEW.delivered_at IS NULL THEN
+                NEW.delivered_at = clock_timestamp();
             END IF;
         END IF;
 
@@ -878,6 +979,14 @@ BEGIN
             IF NEW.acceptance_type IS NULL THEN
                 NEW.acceptance_type = 'explicit_partner_signoff';
             END IF;
+        END IF;
+    END IF;
+
+    -- Protect acceptance metadata against modification on already accepted milestones
+    IF OLD IS NOT NULL AND OLD.status = 'accepted' AND NEW.status = 'accepted' THEN
+        IF NEW.accepted_at IS DISTINCT FROM OLD.accepted_at OR 
+           NEW.acceptance_type IS DISTINCT FROM OLD.acceptance_type THEN
+            RAISE EXCEPTION 'Security Policy Violation: Cannot alter acceptance metadata on an already accepted milestone.';
         END IF;
     END IF;
 
@@ -930,11 +1039,48 @@ BEGIN
         END IF;
     END IF;
 
-    -- Prevent modification of partner approval identity or timestamp once approved
+    -- Change Request State Transitions
+    IF OLD IS NOT NULL AND NEW.status != OLD.status THEN
+        CASE OLD.status
+            WHEN 'draft' THEN
+                IF NEW.status NOT IN ('submitted_to_partner', 'cancelled') THEN
+                    RAISE EXCEPTION 'Lifecycle Violation: Draft Change Requests can only transition to submitted_to_partner or cancelled.';
+                END IF;
+
+            WHEN 'submitted_to_partner' THEN
+                IF NEW.status NOT IN ('approved_by_partner', 'rejected_by_partner', 'draft', 'cancelled') THEN
+                    RAISE EXCEPTION 'Lifecycle Violation: Submitted Change Requests can only transition to approved_by_partner, rejected_by_partner, draft, or cancelled.';
+                END IF;
+
+            WHEN 'approved_by_partner' THEN
+                RAISE EXCEPTION 'Lifecycle Violation: Approved Change Requests cannot be transitioned away from approved_by_partner.';
+
+            WHEN 'rejected_by_partner' THEN
+                IF NEW.status NOT IN ('draft', 'cancelled') THEN
+                    RAISE EXCEPTION 'Lifecycle Violation: Rejected Change Requests can only transition to draft or cancelled.';
+                END IF;
+
+            WHEN 'cancelled' THEN
+                RAISE EXCEPTION 'Lifecycle Violation: Cancelled Change Requests are terminal and cannot be transitioned.';
+        END CASE;
+    END IF;
+
+    -- Prevent modification of partner approval identity, timestamp, or approved content once approved
     IF OLD IS NOT NULL AND OLD.status = 'approved_by_partner' AND NEW.status = 'approved_by_partner' THEN
         IF NEW.partner_approved_by_human_id IS DISTINCT FROM OLD.partner_approved_by_human_id OR 
            NEW.decision_at IS DISTINCT FROM OLD.decision_at THEN
             RAISE EXCEPTION 'Security Policy Violation: Cannot alter partner approval identity or timestamp of an approved Change Request.';
+        END IF;
+
+        -- Protect approved commercial terms and scope from silent alteration
+        IF NEW.title IS DISTINCT FROM OLD.title OR
+           NEW.scope_description IS DISTINCT FROM OLD.scope_description OR
+           NEW.cost_impact IS DISTINCT FROM OLD.cost_impact OR
+           NEW.timeline_impact_days IS DISTINCT FROM OLD.timeline_impact_days OR
+           NEW.feasibility_status IS DISTINCT FROM OLD.feasibility_status OR
+           NEW.project_id IS DISTINCT FROM OLD.project_id OR
+           NEW.cr_number IS DISTINCT FROM OLD.cr_number THEN
+            RAISE EXCEPTION 'Integrity Violation: Content and commercial terms of an approved Change Request cannot be modified. A new Change Request is required.';
         END IF;
     END IF;
 
@@ -970,6 +1116,13 @@ BEGIN
                 team_delivery_authorization_notes = COALESCE(team_delivery_authorization_notes, '') || ' [RE-AUTHORIZATION REQUIRED: CR #' || NEW.cr_number || ' approved with cost/timeline adjustment on ' || clock_timestamp()::text || ']',
                 updated_at = clock_timestamp()
             WHERE id = NEW.project_id;
+        END IF;
+    END IF;
+
+    -- Handle partner rejection of Change Request
+    IF NEW.status = 'rejected_by_partner' AND (OLD IS NULL OR OLD.status != 'rejected_by_partner') THEN
+        IF NEW.decision_at IS NULL THEN
+            NEW.decision_at = clock_timestamp();
         END IF;
     END IF;
 
@@ -1047,6 +1200,14 @@ CREATE POLICY human_operator_all_project_change_requests ON project_change_reque
 -- strictly restricted from reading or mutating delivery tables. RLS defaults to DENY.
 
 -- 7.4. Table Level Privilege Grants & Helper Function Permissions
+REVOKE ALL ON FUNCTION fn_enforce_partnership_status_transitions() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION fn_enforce_project_status_transitions() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION fn_enforce_project_payment_governance() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION fn_enforce_feasibility_lead_approval() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION fn_enforce_team_delivery_authorization() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION fn_enforce_milestone_governance() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION fn_enforce_change_request_governance() FROM PUBLIC, anon, authenticated;
+
 GRANT EXECUTE ON FUNCTION is_technical_lead TO authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON partnerships, projects, project_milestones, project_change_requests TO authenticated;
 

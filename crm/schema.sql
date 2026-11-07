@@ -369,6 +369,10 @@ CREATE TABLE companies (
     CONSTRAINT chk_companies_suppression_logic CHECK (
         (is_suppressed = FALSE AND suppression_reason IS NULL AND suppression_date IS NULL) OR
         (is_suppressed = TRUE AND suppression_reason IS NOT NULL AND suppression_date IS NOT NULL)
+    ),
+    CONSTRAINT chk_companies_disqualified_stage CHECK (
+        qualification_tier IS DISTINCT FROM 'disqualified' OR 
+        lifecycle_stage IN ('identified', 'researching', 'disqualified', 'churned')
     )
 );
 
@@ -755,6 +759,12 @@ CREATE TABLE tasks (
     -- Integrity Rule: A task cannot reference a contact without referencing its company
     CONSTRAINT chk_tasks_contact_requires_company CHECK (
         contact_id IS NULL OR company_id IS NOT NULL
+    ),
+
+    -- State Machine Rule: completed_at must be populated if and only if status is completed
+    CONSTRAINT chk_task_completed_at_sync CHECK (
+        (status = 'completed' AND completed_at IS NOT NULL) OR 
+        (status != 'completed' AND completed_at IS NULL)
     )
 );
 
@@ -1059,6 +1069,73 @@ BEGIN
         RAISE EXCEPTION 'Business Rule Violation: Strategic Revenue Sharing is strictly prohibited in outreach correspondence.';
     END IF;
 
+    -- Block outreach creation or queueing for disqualified companies
+    IF EXISTS (
+        SELECT 1 FROM companies comp 
+        WHERE comp.id = NEW.company_id 
+          AND (comp.qualification_tier = 'disqualified' OR comp.lifecycle_stage = 'disqualified')
+    ) THEN
+        RAISE EXCEPTION 'Compliance Violation: Outreach messages cannot be created, queued, or dispatched for a disqualified company (%).', NEW.company_id;
+    END IF;
+
+    -- Approval status state machine rules
+    IF OLD IS NOT NULL AND NEW.approval_status != OLD.approval_status THEN
+        -- Cannot jump directly from rejected to approved or pending_human_approval
+        IF OLD.approval_status = 'rejected' AND NEW.approval_status != 'draft' THEN
+            RAISE EXCEPTION 'Lifecycle Violation: Rejected outreach messages must return to draft before resubmission or approval.';
+        END IF;
+
+        -- Rejection requires non-empty reason and locks sending status
+        IF NEW.approval_status = 'rejected' THEN
+            IF NEW.rejection_reason IS NULL OR TRIM(NEW.rejection_reason) = '' THEN
+                RAISE EXCEPTION 'Integrity Violation: Rejection of outreach message requires a non-empty rejection_reason.';
+            END IF;
+            IF NEW.sending_status NOT IN ('draft', 'cancelled') THEN
+                RAISE EXCEPTION 'Integrity Violation: Rejected outreach message cannot enter dispatch states.';
+            END IF;
+        END IF;
+    END IF;
+
+    -- Sending status state machine progression rules
+    IF OLD IS NOT NULL AND NEW.sending_status != OLD.sending_status THEN
+        IF OLD.sending_status IN ('replied', 'bounced') THEN
+            RAISE EXCEPTION 'Lifecycle Violation: Outreach message in terminal sending status (%) cannot be transitioned.', OLD.sending_status;
+        END IF;
+
+        IF OLD.sending_status = 'draft' AND NEW.sending_status NOT IN ('queued', 'cancelled') THEN
+            RAISE EXCEPTION 'Lifecycle Violation: Draft outreach message must transition to queued before sending.';
+        END IF;
+
+        IF OLD.sending_status = 'queued' AND NEW.sending_status NOT IN ('sending', 'cancelled', 'draft', 'failed') THEN
+            RAISE EXCEPTION 'Lifecycle Violation: Queued outreach message can only transition to sending, cancelled, draft, or failed.';
+        END IF;
+
+        IF OLD.sending_status = 'sending' AND NEW.sending_status NOT IN ('sent', 'failed') THEN
+            RAISE EXCEPTION 'Lifecycle Violation: Sending outreach message can only transition to sent or failed.';
+        END IF;
+
+        IF OLD.sending_status = 'sent' AND NEW.sending_status NOT IN ('delivered', 'bounced', 'opened', 'replied') THEN
+            RAISE EXCEPTION 'Lifecycle Violation: Sent outreach message cannot transition backward to %.', NEW.sending_status;
+        END IF;
+
+        IF OLD.sending_status = 'delivered' AND NEW.sending_status NOT IN ('opened', 'replied') THEN
+            RAISE EXCEPTION 'Lifecycle Violation: Delivered outreach message cannot transition backward to %.', NEW.sending_status;
+        END IF;
+
+        IF OLD.sending_status = 'opened' AND NEW.sending_status NOT IN ('replied') THEN
+            RAISE EXCEPTION 'Lifecycle Violation: Opened outreach message cannot transition backward to %.', NEW.sending_status;
+        END IF;
+
+        -- Delivery events must not alter approval status or approval metadata
+        IF NEW.sending_status IN ('delivered', 'opened', 'replied', 'bounced') THEN
+            IF NEW.approval_status != OLD.approval_status OR
+               NEW.approved_by_human_id IS DISTINCT FROM OLD.approved_by_human_id OR
+               NEW.approved_at IS DISTINCT FROM OLD.approved_at THEN
+                RAISE EXCEPTION 'Integrity Violation: Delivery event status updates cannot modify message approval status or approval metadata.';
+            END IF;
+        END IF;
+    END IF;
+
     -- Invalidation on material edits: If an approved message has its content, recipient, targeting, commercial meaning, or personalization altered, reset to draft!
     IF OLD IS NOT NULL AND OLD.approval_status = 'approved' AND NEW.approval_status = 'approved' THEN
         IF (
@@ -1294,6 +1371,21 @@ BEGIN
         NEW.reviewed_at = clock_timestamp();
     END IF;
 
+    -- Review status transition rules
+    IF OLD IS NOT NULL AND NEW.review_status != OLD.review_status THEN
+        -- Rejected qualifications must return to draft before resubmission
+        IF OLD.review_status = 'rejected' AND NEW.review_status NOT IN ('draft') THEN
+            RAISE EXCEPTION 'Lifecycle Violation: Rejected qualifications must return to draft before resubmission or approval.';
+        END IF;
+
+        -- Rejection requires disqualification reasons or notes
+        IF NEW.review_status = 'rejected' THEN
+            IF NEW.disqualification_notes IS NULL AND cardinality(NEW.disqualification_reasons) = 0 THEN
+                RAISE EXCEPTION 'Integrity Violation: Rejection of lead qualification requires documented disqualification reasons or notes.';
+            END IF;
+        END IF;
+    END IF;
+
     -- Reset reviewer fields if review_status is not approved
     IF NEW.review_status != 'approved' THEN
         NEW.reviewed_by_human_id = NULL;
@@ -1321,7 +1413,8 @@ BEGIN
             qualification_tier = NEW.qualification_tier,
             lifecycle_stage = CASE 
                 WHEN NEW.qualification_tier = 'disqualified' THEN 'disqualified'::company_lifecycle_stage_type
-                ELSE 'qualified'::company_lifecycle_stage_type
+                WHEN lifecycle_stage IN ('identified', 'researching') THEN 'qualified'::company_lifecycle_stage_type
+                ELSE lifecycle_stage -- Preserve later legitimate lifecycle stages!
             END,
             updated_at = clock_timestamp()
         WHERE id = NEW.company_id;
@@ -1334,6 +1427,50 @@ CREATE TRIGGER trg_sync_lead_qualification_to_company
     AFTER INSERT OR UPDATE ON lead_qualifications
     FOR EACH ROW
     EXECUTE FUNCTION fn_sync_company_qualification();
+
+-- -----------------------------------------------------------------------------
+-- Trigger Function: Enforce Company Lifecycle Stage Transitions & Disqualification Guards
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fn_enforce_company_lifecycle_transitions()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF OLD IS NOT NULL AND NEW.lifecycle_stage != OLD.lifecycle_stage THEN
+        -- Agents are strictly prohibited from changing company lifecycle stage
+        IF is_agent() THEN
+            RAISE EXCEPTION 'Security Policy Violation: Agents are strictly prohibited from modifying company lifecycle stages.';
+        END IF;
+
+        -- Disqualified company cannot enter active outreach, negotiation, or partnership
+        IF OLD.lifecycle_stage = 'disqualified' AND NEW.lifecycle_stage NOT IN ('identified', 'researching', 'churned') THEN
+            RAISE EXCEPTION 'Lifecycle Violation: Disqualified company cannot transition directly to %. Re-evaluation via researching or identified required.', NEW.lifecycle_stage;
+        END IF;
+
+        -- Outreach stages require qualification tier to be qualified (not null and not disqualified)
+        IF NEW.lifecycle_stage IN ('outreach_queued', 'in_outreach') THEN
+            IF NEW.qualification_tier IS NULL OR NEW.qualification_tier = 'disqualified' THEN
+                RAISE EXCEPTION 'Lifecycle Violation: Company cannot enter outreach stages while unqualified or disqualified.';
+            END IF;
+        END IF;
+
+        -- Identified cannot jump directly to active execution or partnership
+        IF OLD.lifecycle_stage = 'identified' AND NEW.lifecycle_stage IN ('in_outreach', 'active_conversation', 'negotiating', 'partner_active', 'partner_dormant') THEN
+            RAISE EXCEPTION 'Lifecycle Violation: Identified companies must be researched and qualified before entering %.', NEW.lifecycle_stage;
+        END IF;
+
+        -- Churned partner re-activation rules
+        IF OLD.lifecycle_stage = 'churned' AND NEW.lifecycle_stage NOT IN ('identified', 'researching', 'partner_dormant') THEN
+            RAISE EXCEPTION 'Lifecycle Violation: Churned partners can only re-enter lifecycle via identified, researching, or partner_dormant.';
+        END IF;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_enforce_company_lifecycle
+    BEFORE UPDATE OF lifecycle_stage ON companies
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_enforce_company_lifecycle_transitions();
 
 -- -----------------------------------------------------------------------------
 -- Trigger Function: Enforce Task Governance & Immutability for Agents
@@ -1357,8 +1494,27 @@ CREATE TRIGGER trg_sync_lead_qualification_to_company
 CREATE OR REPLACE FUNCTION fn_enforce_task_governance()
 RETURNS TRIGGER AS $$
 BEGIN
+    -- Operational lifecycle rules for all callers
+    IF NEW.status = 'completed' AND (OLD IS NULL OR OLD.status != 'completed') THEN
+        IF NEW.completed_at IS NULL THEN
+            NEW.completed_at = clock_timestamp();
+        END IF;
+    ELSIF NEW.status != 'completed' THEN
+        NEW.completed_at = NULL;
+    END IF;
+
     -- Only restrict agents; human operators retain full operational management
     IF is_agent() THEN
+        -- Prevent agents from modifying or reopening completed or cancelled tasks
+        IF OLD IS NOT NULL AND OLD.status IN ('completed', 'cancelled') THEN
+            RAISE EXCEPTION 'Security Policy Violation: Agents cannot reopen, modify, or transition completed or cancelled tasks.';
+        END IF;
+
+        -- Agents cannot jump pending directly to completed without in_progress
+        IF OLD IS NOT NULL AND OLD.status = 'pending' AND NEW.status = 'completed' THEN
+            RAISE EXCEPTION 'Lifecycle Violation: Tasks must be transitioned to in_progress before completion.';
+        END IF;
+
         -- Prevent modification of assignment and scope fields
         IF NEW.assigned_actor_type IS DISTINCT FROM OLD.assigned_actor_type OR
            NEW.assigned_actor_identity IS DISTINCT FROM OLD.assigned_actor_identity THEN
@@ -1397,12 +1553,8 @@ BEGIN
             RAISE EXCEPTION 'Security Policy Violation: Agents cannot alter task created_at.';
         END IF;
 
-        -- Automatic database timestamping on task completion
-        IF NEW.status = 'completed' AND OLD.status != 'completed' THEN
-            NEW.completed_at = clock_timestamp();
-        ELSIF NEW.status != 'completed' THEN
-            NEW.completed_at = NULL;
-        ELSIF OLD.status = 'completed' AND NEW.status = 'completed' THEN
+        -- Prevent tampering with task completed_at timestamp
+        IF OLD.status = 'completed' AND NEW.status = 'completed' THEN
             IF NEW.completed_at IS DISTINCT FROM OLD.completed_at THEN
                 RAISE EXCEPTION 'Security Policy Violation: Agents cannot tamper with task completed_at timestamp.';
             END IF;
@@ -1417,6 +1569,38 @@ CREATE TRIGGER trg_enforce_task_governance
     BEFORE UPDATE ON tasks
     FOR EACH ROW
     EXECUTE FUNCTION fn_enforce_task_governance();
+
+-- -----------------------------------------------------------------------------
+-- Trigger Function: Enforce Conversation Status Transitions
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fn_enforce_conversation_status_transitions()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF OLD IS NOT NULL AND NEW.status != OLD.status THEN
+        -- Only human operators can change conversation status
+        IF is_agent() THEN
+            RAISE EXCEPTION 'Security Policy Violation: Agents are not permitted to modify conversation status.';
+        END IF;
+
+        -- Reopening terminal conversations requires human operator authority
+        IF OLD.status IN ('closed_lost', 'closed_won') AND NEW.status NOT IN ('closed_lost', 'closed_won') THEN
+            IF NOT is_human_operator() THEN
+                RAISE EXCEPTION 'Security Policy Violation: Only authenticated human operators can reopen closed conversations.';
+            END IF;
+            IF NEW.status NOT IN ('active', 'paused') THEN
+                RAISE EXCEPTION 'Lifecycle Violation: Closed conversations can only be reopened to active or paused stage.';
+            END IF;
+        END IF;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_enforce_conversation_status
+    BEFORE UPDATE OF status ON conversations
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_enforce_conversation_status_transitions();
 
 -- -----------------------------------------------------------------------------
 -- Trigger Function: Capture Technical Audit Trail
@@ -1888,6 +2072,8 @@ REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM anon, authenticated, public;
 
 -- Explicitly revoke execution on internal trigger functions and private helpers
 REVOKE ALL ON FUNCTION fn_audit_log_capture() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION fn_enforce_company_lifecycle_transitions() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION fn_enforce_conversation_status_transitions() FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION is_identifier_suppressed(suppression_target_type, TEXT) FROM PUBLIC, anon;
 
 -- Grant EXECUTE on trusted security and calculation helpers
