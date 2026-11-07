@@ -1,9 +1,15 @@
 # Environment & Secrets
 .env
 .env.*
+!.env.example
 *.local
 *.pem
 *.key
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
 
 # Operating System Files
 .DS_Store

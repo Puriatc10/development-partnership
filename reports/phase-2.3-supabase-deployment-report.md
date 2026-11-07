@@ -74,8 +74,8 @@ This report documents the preparation, deployment, and end-to-end runtime securi
 - `fn_enforce_conversation_status_transitions()`: Restricts conversation status modification to human operators.
 - `fn_audit_log_capture()`: Automated trigger capturing audit trails across sensitive mutations.
 
-### 3.4. Database Triggers (21 Triggers)
-- `trg_companies_updated_at`, `trg_contacts_updated_at`, `trg_research_reports_updated_at`, `trg_lead_qualifications_updated_at`, `trg_outreach_messages_updated_at`, `trg_conversations_updated_at`, `trg_tasks_updated_at`.
+### 3.4. Database Triggers (22 Triggers)
+- `trg_companies_updated_at`, `trg_contacts_updated_at`, `trg_research_reports_updated_at`, `trg_lead_qualifications_updated_at`, `trg_outreach_campaigns_updated_at`, `trg_outreach_messages_updated_at`, `trg_conversations_updated_at`, `trg_tasks_updated_at`.
 - `trg_enforce_audit_log_immutability`, `trg_enforce_suppression_immutability`.
 - `trg_sync_company_primary_domain`, `trg_sync_contact_suppression`, `trg_sync_company_suppression`.
 - `trg_enforce_outreach_approval`, `trg_enforce_lead_qual_rules`, `trg_sync_lead_qualification_to_company`, `trg_enforce_company_lifecycle`, `trg_enforce_task_governance`, `trg_enforce_conversation_status`.
