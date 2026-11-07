@@ -177,17 +177,20 @@ def main():
 
     # Common auth options
     for p in (p_reg, p_task, p_insp, subparsers.choices["list-companies"]):
-        p.add_argument("--email", default=os.environ.get("OPERATOR_EMAIL"))
-        p.add_argument("--password", default=os.environ.get("OPERATOR_PASSWORD"))
+        p.add_argument("--email", default=None)
+        p.add_argument("--password", default=None)
 
     args = parser.parse_args()
     config = Config.load()
 
-    if not args.email or not args.password:
+    email = args.email or os.environ.get("OPERATOR_EMAIL")
+    password = args.password or os.environ.get("OPERATOR_PASSWORD")
+
+    if not email or not password:
         logger.error("Operator credentials (--email and --password or OPERATOR_EMAIL/OPERATOR_PASSWORD) required")
         sys.exit(1)
 
-    client = get_operator_client(config.supabase_url, config.anon_key, args.email, args.password)
+    client = get_operator_client(config.supabase_url, config.anon_key, email, password)
 
     if args.subcommand == "register-company":
         company = register_company(client, args.name, args.domain, args.website, args.segment)

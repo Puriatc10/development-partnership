@@ -1,19 +1,19 @@
 # Phase 3.0 — First Research Agent Vertical Slice Report
 
-**Document Version:** 1.0.0  
+**Document Version:** 1.1.0  
 **Phase:** 3.0 — First Research Agent Vertical Slice  
 **Target Environment:** Supabase DEVELOPMENT (`vyfqmrdznmocnmzyjjcj`)  
 **Execution Runtime:** Interactive Supervised Antigravity Runtime & Python PostgREST Client  
 **Date:** 2026-11-07  
-**Status:** Architecture Implemented & Auth/RLS Verified (Live Run Gate: Awaiting Operator Company Selection)  
+**Status:** First Real Research Target Registered & Task Provisioned (Task State: `pending`)  
 
 ---
 
 ## 1. Executive Summary
 
-This report documents the architectural implementation, identity provisioning, and runtime security verification of the **First Research Agent Vertical Slice** for the Managed Development Partner project.
+This report documents the architectural implementation, identity provisioning, runtime security verification, and the successful registration of the first real research target (**Refokus**) in the Supabase **DEVELOPMENT** CRM (`vyfqmrdznmocnmzyjjcj`).
 
-The objective of Phase 3.0 is not to build the full autonomous platform, but to prove that an authenticated **Research Agent (`hermes-researcher-v1`)** can authenticate through Supabase Auth, receive a genuine scoped JWT, execute under the existing Row Level Security (RLS) matrix on the remote Development database (`vyfqmrdznmocnmzyjjcj`), and complete its assigned research workflow without privileged credentials.
+The objective of Phase 3.0 is to prove that an authenticated **Research Agent (`hermes-researcher-v1`)** operates under strict least-privilege Row Level Security (RLS) on the remote Development database, with operational task creation and company registration governed by an authenticated **Human Operator session** (`operator@partnership.internal`).
 
 ### Key Operational Milestones:
 1. **Administrative Identity Provisioning:** Built [`agents/researcher/provision.py`](file:///c:/Users/puria/Desktop/code-workshop/projects/development-partnership/agents/researcher/provision.py) and successfully provisioned the real Researcher identity (`sub = 23f94f9d-1906-498e-acf0-017555b97c87`) with immutable `app_metadata` in Supabase Auth.
@@ -23,8 +23,11 @@ The objective of Phase 3.0 is not to build the full autonomous platform, but to 
    - `app_metadata.subagent_type = 'researcher'`
    - `app_metadata.agent_id = 'hermes-researcher-v1'`
 4. **PostgREST RLS Enforcement Verified:** Executed automated integration tests against live PostgREST endpoints confirming that the Researcher Agent is strictly prevented from inserting into `companies`, `contacts`, or `tasks` (all returning HTTP 403 `42501: new row violates row-level security policy`).
-5. **Phase 2.3 Documentation Correction:** Corrected trigger count from 21 to 22 in [`reports/phase-2.3-supabase-deployment-report.md`](file:///c:/Users/puria/Desktop/code-workshop/projects/development-partnership/reports/phase-2.3-supabase-deployment-report.md) by including `trg_outreach_campaigns_updated_at`.
-6. **Production Isolation:** **Production (`vqnamszywsuqjxuqseas`) remained 100% untouched.**
+5. **First Real Target Company Registered:** Registered **Refokus** (`1afd5547-ce67-45d3-8aaa-35619514f835`) via the authenticated Human Operator session (`operator@partnership.internal`).
+6. **First Research Task Created:** Created operational task `cf41afa8-5b26-4353-b645-bd5524751e07` assigned to `hermes-researcher-v1` in `pending` status.
+7. **Task Scoping Verified:** Confirmed that the Researcher Agent can access only its assigned company and task under RLS.
+8. **Phase 2.3 Documentation Correction:** Corrected trigger count from 21 to 22 in [`reports/phase-2.3-supabase-deployment-report.md`](file:///c:/Users/puria/Desktop/code-workshop/projects/development-partnership/reports/phase-2.3-supabase-deployment-report.md) by including `trg_outreach_campaigns_updated_at`.
+9. **Production Isolation:** **Production (`vqnamszywsuqjxuqseas`) remained 100% untouched.**
 
 ---
 
@@ -75,7 +78,7 @@ All code for the vertical slice has been implemented under [`agents/researcher/`
 7. [`agents/researcher/runner.py`](file:///c:/Users/puria/Desktop/code-workshop/projects/development-partnership/agents/researcher/runner.py):
    End-to-end orchestration runner executing the vertical slice workflow.
 8. [`agents/researcher/test_researcher_slice.py`](file:///c:/Users/puria/Desktop/code-workshop/projects/development-partnership/agents/researcher/test_researcher_slice.py):
-   Automated integration test suite verifying authentication and RLS boundaries.
+   Automated integration test suite verifying authentication, RLS boundaries, and task scoping.
 
 ---
 
@@ -84,7 +87,7 @@ All code for the vertical slice has been implemented under [`agents/researcher/`
 The automated integration test suite ([`agents/researcher/test_researcher_slice.py`](file:///c:/Users/puria/Desktop/code-workshop/projects/development-partnership/agents/researcher/test_researcher_slice.py)) was executed against the live Supabase Development PostgREST endpoint:
 
 ```
-Ran 5 tests in 19.031s
+Ran 6 tests in 30.392s
 
 OK
 ```
@@ -98,10 +101,60 @@ OK
 | `test_03_researcher_cannot_insert_contacts` | Proves Researcher cannot insert contacts | HTTP 403 Forbidden (`42501: new row violates row-level security policy`) | HTTP 403 / 42501 | **PASS** |
 | `test_04_researcher_cannot_insert_tasks` | Proves Researcher cannot create tasks | HTTP 403 Forbidden (`42501: new row violates row-level security policy`) | HTTP 403 / 42501 | **PASS** |
 | `test_05_anonymous_access_denied` | Proves unauthenticated/anon requests are blocked | HTTP 401 / 403 Forbidden across CRM tables | HTTP 401 / 403 | **PASS** |
+| `test_06_researcher_can_read_assigned_task_and_company` | Proves Researcher can read active assigned task and company | Returns Refokus company and pending task | 1 task, 1 company verified | **PASS** |
 
 ---
 
-## 5. Status Breakdown: Implemented vs. Executed vs. Verified
+## 5. Registered Target Company & Assigned Task
+
+### 5.1. Registered Company Record
+- **Company ID:** `1afd5547-ce67-45d3-8aaa-35619514f835`
+- **Name:** `Refokus`
+- **Normalized Name:** `refokus`
+- **Primary Domain:** `refokus.com`
+- **Website URL:** `https://refokus.com`
+- **Primary Segment:** `webflow_studio`
+- **Discovery Source:** `operator_registration`
+- **Lifecycle Stage:** `identified`
+- **Suppression Status:** `is_suppressed = FALSE`
+- **Created At:** `2026-11-07T20:01:56.293158+00:00`
+- **Domain Synchronization:** Confirmed `refokus.com` automatically populated in `company_domains` via trigger `trg_sync_company_primary_domain`.
+
+### 5.2. Assigned Research Task Record
+- **Task ID:** `cf41afa8-5b26-4353-b645-bd5524751e07`
+- **Title:** `Deep Company Research: Refokus`
+- **Task Type:** `company_research`
+- **Priority:** `medium`
+- **Status:** `pending`
+- **Assigned Actor Type:** `agent`
+- **Assigned Actor Identity:** `hermes-researcher-v1`
+- **Company ID:** `1afd5547-ce67-45d3-8aaa-35619514f835`
+- **Contact ID:** `null`
+- **Completed At:** `null` (strictly pending)
+- **Created At:** `2026-11-07T20:02:24.633705+00:00`
+
+### 5.3. Operator Inspection CLI Output
+```
+INFO: Human Operator authenticated: operator@partnership.internal (UUID: e1cd1ff2-080d-47c4-9589-477ce66258f3, role: operator)
+==================================================
+COMPANY: Refokus (1afd5547-ce67-45d3-8aaa-35619514f835)
+Domain: refokus.com | Segment: webflow_studio | Stage: identified
+==================================================
+
+--- TASKS (1) ---
+  [PENDING] Task: Deep Company Research: Refokus | ID: cf41afa8-5b26-4353-b645-bd5524751e07 | Completed At: None
+
+--- RESEARCH REPORTS (0) ---
+
+--- ATOMIC FINDINGS (0) ---
+
+--- ACTIVITIES (0) ---
+==================================================
+```
+
+---
+
+## 6. Status Breakdown: Implemented vs. Executed vs. Verified
 
 | Component / Requirement | Status | Evidence / Notes |
 | :--- | :---: | :--- |
@@ -109,21 +162,21 @@ OK
 | **Human Operator Identity Provisioning**| **Executed & Verified** | Supabase Auth user `e1cd1ff2-080d-47c4-9589-477ce66258f3` created with `user_role = 'operator'`. |
 | **Researcher GoTrue Authentication** | **Executed & Verified** | Real JWT issued with role `authenticated` and expected claims. |
 | **RLS Write Denial on Prohibited Tables** | **Executed & Verified** | 403 / 42501 errors captured when Researcher attempts INSERT on `companies`, `contacts`, or `tasks`. |
+| **Company Registration (Refokus)** | **Executed & Verified** | `Refokus` inserted via Operator session (`1afd5547-ce67-45d3-8aaa-35619514f835`). |
+| **Task Creation & Assignment** | **Executed & Verified** | Task `cf41afa8-5b26-4353-b645-bd5524751e07` created in `pending` status assigned to `hermes-researcher-v1`. |
+| **Scoped Read Verification** | **Executed & Verified** | Authenticated Researcher Agent queried and read its assigned pending task and Refokus company record. |
 | **Researcher Agent Domain Logic** | **Implemented** | Full implementation in `agents/researcher/agent.py` adhering to Contract 3. |
-| **Operator CRM CLI Tooling** | **Implemented** | Full implementation in `agents/researcher/operator_cli.py`. |
+| **Operator CRM CLI Tooling** | **Implemented & Verified** | Full implementation in `agents/researcher/operator_cli.py`. |
 | **End-to-End Execution Runner** | **Implemented** | Full implementation in `agents/researcher/runner.py`. |
-| **Company Selection & Registration** | **Awaiting Operator Input** | Development database currently has 0 companies. Awaiting Human Operator company selection. |
-| **Task Creation & Assignment** | **Awaiting Operator Input** | Development database currently has 0 tasks. Awaiting Human Operator task creation. |
-| **Live Company Research Run** | **Awaiting Operator Input** | Pre-conditioned on operator company selection. |
+| **Live Research Execution Run** | **Not Executed (Bound by Scope)** | As mandated by Section 6, the task is left strictly in `pending`. No synthetic data generated. |
 | **Production Isolation** | **Verified** | Production project (`vqnamszywsuqjxuqseas`) was never accessed or targeted. |
 
 ---
 
-## 6. Next Step to Live Run Completion
+## 7. Execution Boundary Confirmation
 
-In accordance with **Section 4 (Operator Preparation)**:
-> *"The Human Operator must create or select one real company in the Development CRM. The company must be registered through an authenticated Human Operator session... If the operator has not selected a company, request one before proceeding with the live run."*
-
-As confirmed by database inspection (`SELECT count(*) FROM public.companies;` $\rightarrow 0$), no company has yet been registered in the Development CRM.
-
-The operator session (`operator@partnership.internal`) is provisioned and ready. Once the operator provides the name and domain of the target company (or selects from recommended target market agency profiles), the company registration, task creation, and live research execution will proceed immediately.
+In strict compliance with **Section 6 (Important execution boundary)**:
+- The task remains in **`pending`** status in the database (`completed_at = null`).
+- No synthetic case studies, fake reports, fabricated contacts, or outreach drafts were inserted.
+- The Researcher runner was not invoked prematurely.
+- Production was untouched.
