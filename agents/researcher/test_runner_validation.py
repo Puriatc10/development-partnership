@@ -10,6 +10,11 @@ Verifies:
 6. A finding-count mismatch prevents task completion.
 7. Failed activity logging prevents task completion.
 8. Successful execution follows the correct order.
+9. Unauthorized project ref is rejected by fail-closed Development environment guard.
+10. Unauthorized Supabase URL is rejected by fail-closed Development environment guard.
+11. Missing project ref or URL is rejected by fail-closed Development environment guard.
+12. Missing expected company ID is rejected before authentication or task mutation.
+13. Mismatched company ID is rejected before ANY task mutation or database write.
 """
 
 import unittest
@@ -144,6 +149,7 @@ class TestRunnerValidationAndIntegrity(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             run_researcher_vertical_slice(
                 config=self.config,
+                expected_company_id="comp-uuid-1",
                 research_summary="Valid summary",
                 recommended_angle="Valid angle",
                 findings=self.valid_findings,
@@ -182,6 +188,7 @@ class TestRunnerValidationAndIntegrity(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             run_researcher_vertical_slice(
                 config=self.config,
+                expected_company_id="comp-uuid-1",
                 research_summary="Valid summary",
                 recommended_angle="Valid angle",
                 findings=self.valid_findings,
@@ -220,6 +227,7 @@ class TestRunnerValidationAndIntegrity(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             run_researcher_vertical_slice(
                 config=self.config,
+                expected_company_id="comp-uuid-1",
                 research_summary="Valid summary",
                 recommended_angle="Valid angle",
                 findings=self.valid_findings,
@@ -255,6 +263,7 @@ class TestRunnerValidationAndIntegrity(unittest.TestCase):
         res = run_researcher_vertical_slice(
             config=self.config,
             task_id="task-uuid-1",
+            expected_company_id="comp-uuid-1",
             research_summary="Valid summary",
             recommended_angle="Valid angle",
             overall_confidence="high",
@@ -262,6 +271,7 @@ class TestRunnerValidationAndIntegrity(unittest.TestCase):
         )
 
         self.assertEqual(res["task_id"], "task-uuid-1")
+        self.assertEqual(res["company_id"], "comp-uuid-1")
         self.assertEqual(res["findings_count"], 3)
         self.assertEqual(res["completed_task"]["status"], "completed")
 
@@ -291,6 +301,141 @@ class TestRunnerValidationAndIntegrity(unittest.TestCase):
             ),
             call.complete_task("task-uuid-1"),
         ])
+
+    def test_09_wrong_project_ref_rejected_before_any_mutation(self):
+        """Runner must reject unexpected/unauthorized project refs before any network or mutation."""
+        bad_config = Config(
+            project_ref="vqnamszywsuqjxuqseas",  # Production ref!
+            supabase_url="https://vyfqmrdznmocnmzyjjcj.supabase.co",
+            anon_key="mock_key",
+            researcher_email="researcher.v1@agents.internal",
+            researcher_password="mock_pw",
+            researcher_agent_id="hermes-researcher-v1",
+        )
+        with patch("agents.researcher.runner.SupabaseAuthClient") as mock_auth:
+            with self.assertRaises(ValueError) as ctx:
+                run_researcher_vertical_slice(
+                    config=bad_config,
+                    expected_company_id="comp-uuid-1",
+                    research_summary="Valid summary",
+                    recommended_angle="Valid angle",
+                    findings=self.valid_findings,
+                )
+            self.assertIn("Unauthorized project ref", str(ctx.exception))
+            mock_auth.assert_not_called()
+
+    def test_10_wrong_supabase_url_rejected_before_any_mutation(self):
+        """Runner must reject unexpected/unauthorized Supabase URLs before any network or mutation."""
+        bad_config = Config(
+            project_ref="vyfqmrdznmocnmzyjjcj",
+            supabase_url="https://vqnamszywsuqjxuqseas.supabase.co",  # Production URL!
+            anon_key="mock_key",
+            researcher_email="researcher.v1@agents.internal",
+            researcher_password="mock_pw",
+            researcher_agent_id="hermes-researcher-v1",
+        )
+        with patch("agents.researcher.runner.SupabaseAuthClient") as mock_auth:
+            with self.assertRaises(ValueError) as ctx:
+                run_researcher_vertical_slice(
+                    config=bad_config,
+                    expected_company_id="comp-uuid-1",
+                    research_summary="Valid summary",
+                    recommended_angle="Valid angle",
+                    findings=self.valid_findings,
+                )
+            self.assertIn("Unauthorized Supabase URL", str(ctx.exception))
+            mock_auth.assert_not_called()
+
+    def test_11_missing_project_ref_or_url_rejected_before_mutation(self):
+        """Missing project_ref or supabase_url must fail closed immediately."""
+        bad_config1 = Config(
+            project_ref="",
+            supabase_url="https://vyfqmrdznmocnmzyjjcj.supabase.co",
+            anon_key="mock_key",
+            researcher_email="researcher.v1@agents.internal",
+            researcher_password="mock_pw",
+            researcher_agent_id="hermes-researcher-v1",
+        )
+        with self.assertRaises(ValueError) as ctx:
+            run_researcher_vertical_slice(
+                config=bad_config1,
+                expected_company_id="comp-uuid-1",
+                research_summary="Valid summary",
+                recommended_angle="Valid angle",
+                findings=self.valid_findings,
+            )
+        self.assertIn("SUPABASE_PROJECT_REF is missing", str(ctx.exception))
+
+        bad_config2 = Config(
+            project_ref="vyfqmrdznmocnmzyjjcj",
+            supabase_url="",
+            anon_key="mock_key",
+            researcher_email="researcher.v1@agents.internal",
+            researcher_password="mock_pw",
+            researcher_agent_id="hermes-researcher-v1",
+        )
+        with self.assertRaises(ValueError) as ctx:
+            run_researcher_vertical_slice(
+                config=bad_config2,
+                expected_company_id="comp-uuid-1",
+                research_summary="Valid summary",
+                recommended_angle="Valid angle",
+                findings=self.valid_findings,
+            )
+        self.assertIn("SUPABASE_URL is missing", str(ctx.exception))
+
+    def test_12_missing_expected_company_id_rejected_before_mutation(self):
+        """Missing expected_company_id must raise ValueError before any auth or task mutation."""
+        with patch("agents.researcher.runner.SupabaseAuthClient") as mock_auth:
+            with self.assertRaises(ValueError) as ctx:
+                run_researcher_vertical_slice(
+                    config=self.config,
+                    expected_company_id=None,
+                    research_summary="Valid summary",
+                    recommended_angle="Valid angle",
+                    findings=self.valid_findings,
+                )
+            self.assertIn("Missing required 'expected_company_id'", str(ctx.exception))
+            mock_auth.assert_not_called()
+
+    @patch("agents.researcher.runner.ResearcherAgent")
+    @patch("agents.researcher.runner.PostgrestClient")
+    @patch("agents.researcher.runner.SupabaseAuthClient")
+    def test_13_mismatched_company_id_rejected_before_mutation(self, mock_auth_cls, mock_client_cls, mock_agent_cls):
+        """Mismatched expected_company_id and task.company_id must fail before ANY task mutation or db write."""
+        mock_auth = mock_auth_cls.return_value
+        mock_auth.sign_in_with_password.return_value = {
+            "access_token": "mock_jwt",
+            "claims": {"sub": "mock_sub"},
+        }
+
+        mock_agent = mock_agent_cls.return_value
+        # Task belongs to company-999, but expected is comp-uuid-1
+        mock_agent.get_assigned_active_task.return_value = {
+            "id": "task-uuid-1",
+            "company_id": "unexpected-comp-999",
+            "status": "pending",
+        }
+
+        with self.assertRaises(ValueError) as ctx:
+            run_researcher_vertical_slice(
+                config=self.config,
+                task_id="task-uuid-1",
+                expected_company_id="comp-uuid-1",
+                research_summary="Valid summary",
+                recommended_angle="Valid angle",
+                findings=self.valid_findings,
+            )
+
+        self.assertIn("Company/Task consistency mismatch", str(ctx.exception))
+
+        # Crucial verification: Zero task state transitions or writes were performed!
+        mock_agent.read_assigned_company.assert_not_called()
+        mock_agent.transition_task_in_progress.assert_not_called()
+        mock_agent.persist_research_report.assert_not_called()
+        mock_agent.persist_research_findings.assert_not_called()
+        mock_agent.record_activity.assert_not_called()
+        mock_agent.complete_task.assert_not_called()
 
 
 if __name__ == "__main__":

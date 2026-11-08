@@ -4,7 +4,7 @@
   "research_summary": "Refokus is a premier digital design and creative technology agency and certified Webflow Enterprise Partner specializing in brand strategy, visual identity, interactive motion graphics, and advanced front-end development for high-growth B2B tech startups, deep tech ventures, and enterprise clients. Founded in 2021 by Leo Zakour and Steffi Zakour with dual hubs in Hamburg, Germany and New York City, USA, the remote-first boutique agency (~10-49 employees) has delivered over 200 projects and created industry-standard utilities including 'Refokus Tools'. They represent an ideal Webflow Studio partner profile for behind-the-scenes managed backend, API integration, and custom React component capacity.",
   "recommended_angle": "Behind-the-scenes managed backend development, external database integration (Supabase, PostgreSQL), authentication systems, and bespoke React component engineering to handle technical complexity beyond Webflow's native visual builder capabilities.",
   "overall_confidence": "high",
-  "gaps_and_unknowns": "1. Preferred backend infrastructure, runtime environments, and cloud database providers (e.g. Supabase, Xano, AWS, Firebase) remain unverified publicly.\n2. Current subcontracting and external engineering vendor policies are undisclosed.\n3. Exact commercial decision-maker receptivity to wholesale white-label engineering capacity has not yet been established.",
+  "gaps_and_unknowns": "1. Preferred backend infrastructure, runtime environments, and cloud database providers (e.g. Supabase, Xano, AWS, Firebase) remain unverified publicly.\n2. Current subcontracting and external engineering vendor policies are undisclosed.\n3. Exact commercial decision-maker receptivity to wholesale white-label engineering capacity has not yet been established.\n4. Actual direct company project pricing floors and billing rates remain unverified beyond third-party directory estimates (Clutch listings show variance between historical date-unverified $10k+/$150-$199/hr and current 2026-11-08 $25k+/$100-$149/hr).",
   "proposed_contacts_for_operator_review": [
     {
       "name": "Leonardo (Leo) Zakour",
@@ -71,9 +71,9 @@
     {
       "finding_type": "verified_fact",
       "category": "pricing_rates",
-      "statement": "Commercial project minimums are estimated on public directories at $10,000+ with average hourly rates around $150-$199/hr, reflecting premium positioning for custom design and front-end engineering.",
+      "statement": "Public directory listings provide estimated pricing tiers but show observed variance and do not represent confirmed direct company contract pricing. A current Clutch profile inspection (observed 2026-11-08, source: https://clutch.co/profile/refokus) reports a $25,000+ minimum project size with a $100-$149/hr average hourly rate. Earlier directory aggregations cited a $10,000+ minimum project size with a $150-$199/hr average rate, but their original observation date cannot be verified (historical date-unverified). Actual bespoke project pricing and rate cards remain unverified (TBD).",
       "evidence_url": "https://clutch.co/profile/refokus",
-      "evidence_excerpt": "Min. project size: $10,000+; Avg. hourly rate: $150 - $199 / hr; Employees: 11-50.",
+      "evidence_excerpt": "Current Clutch listing (observed 2026-11-08): 'Min. project size: $25,000+; Avg. hourly rate: $100 - $149 / hr'. Historical directory aggregation (observation date unverified): 'Min. project size: $10,000+; Avg. hourly rate: $150 - $199 / hr'. Note: Directory estimates only; not verified direct company pricing.",
       "confidence": "medium"
     },
     {

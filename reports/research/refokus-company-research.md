@@ -27,9 +27,14 @@ With over 200 delivered projects, numerous international awards (Awwwards, CSS D
 - **Headquarters / Hubs:** Hamburg, Germany & New York, NY, USA (Remote-first delivery model).
 - **Team Size:** Estimated 10–49 employees (~20–25 core team members across design, motion, and front-end engineering).
 - **Commercial Engagement Model:** Fixed-scope project wholesale engagements, brand-to-launch packages, and selective ongoing retainers.
-- **Estimated Rate & Project Minimums:**
-  - Project Minimum: \$10,000+ (typically scaling to \$30,000–\$75,000+ for enterprise rebranding and complex builds).
-  - Average Hourly Rate: \$150 – \$199 / hr (Clutch verified directory estimates).
+- **Estimated Commercial Pricing (Third-Party Directory Estimates — Not Confirmed Direct Pricing):**
+  - **Current Observed Directory Listing (Clutch, observed 2026-11-08):**
+    - Project Minimum: \$25,000+
+    - Average Hourly Rate: \$100 – \$149 / hr
+  - **Historical Directory Observation (Observation date unverified):**
+    - Project Minimum: \$10,000+
+    - Average Hourly Rate: \$150 – \$199 / hr
+  - *Critical Assessment:* These figures represent third-party directory aggregator estimates (Clutch) rather than verified contractual rate cards. Actual bespoke engagement pricing, project minimums, and capacity rate structures remain `TBD` pending direct discovery.
 
 ---
 
@@ -114,7 +119,7 @@ The 13 atomic findings persisted in the Development Supabase CRM (`research_find
 | 4 | `verified_fact` | `technology_stack` | Built and maintains Refokus Tools (`tools.refokus.com`) and `refokus-agency` GitHub. | `https://tools.refokus.com` | High |
 | 5 | `verified_fact` | `client_roster` | Client roster includes Meridian, Arqitel, Analog Way, Exebenus, BCG, Yahoo!, Spotify. | `https://refokus.com/work` | High |
 | 6 | `verified_fact` | `team_structure` | Remote-first team of 10-49 employees (~20-25 core) with Hamburg and NYC hubs. | `https://clutch.co/profile/refokus` | Medium |
-| 7 | `verified_fact` | `pricing_rates` | Project minimums estimated at \$10k+ with average hourly rates around \$150-\$199/hr. | `https://clutch.co/profile/refokus` | Medium |
+| 7 | `verified_fact` | `pricing_rates` | Directory pricing estimates show variance ($25k+ min / $100-$149/hr on Clutch observed 2026-11-08 vs. date-unverified historical $10k+ / $150-$199/hr). Directory estimates, not verified company pricing. | `https://clutch.co/profile/refokus` | Medium |
 | 8 | `verified_fact` | `growth_signals` | High-volume delivery of 200+ projects and enterprise builds indicates recurring dev demand. | `https://refokus.com` | High |
 | 9 | `hypothesis` | `business_model` | White-label backend/API partner enables Refokus to capture full-stack contracts without backend hires. | `https://refokus.com` | High |
 | 10 | `hypothesis` | `pain_points` | Webflow native CMS/logic constraints require custom code/middleware, risking delivery bottlenecks. | `https://tools.refokus.com` | Medium |
@@ -130,6 +135,7 @@ The 13 atomic findings persisted in the Development Supabase CRM (`research_find
 1. **Backend Stack Preference:** Supabase vs. Xano vs. custom Node/Python backend.
 2. **Subcontracting Appetite:** Whether Refokus actively partners with external engineering vendors.
 3. **Outreach Receptivity:** Best channel and contact point (Leo Zakour vs. Steffi Zakour).
+4. **Contractual Pricing Floors:** Actual bespoke engagement minimums and billing rates remain unverified beyond third-party directory estimates.
 
 ### Recommended Next Steps for Human Operator:
 1. **Qualification Review:** Trigger or prepare the Phase 4 Qualification Agent review to evaluate Refokus against the Partner Qualification Matrix.

@@ -2,16 +2,19 @@
 Researcher Agent Execution Runner.
 
 Executes the Researcher vertical slice workflow end-to-end:
-1. Validates research payload strictly (summary, recommended_angle, confidence, findings, evidence URLs)
-2. Authenticates as Researcher via Supabase Auth (scoped JWT, role=authenticated)
-3. Verifies app_metadata claims (user_role=agent, subagent_type=researcher, agent_id)
-4. Queries assigned active task from 'tasks' table under RLS
-5. Reads assigned company under RLS
-6. Transitions task from 'pending' to 'in_progress' only after preflight validation succeeds
-7. Persists structured research_reports record
-8. Persists atomic research_findings records (asserting all succeed)
-9. Logs research completion in 'activities'
-10. Transitions task to 'completed' (completed_at synchronized and verified)
+1. Enforces fail-closed Development environment guard (project_ref and normalized supabase_url)
+2. Validates research payload strictly (summary, recommended_angle, confidence, findings, evidence URLs)
+3. Validates explicit expected company ID
+4. Authenticates as Researcher via Supabase Auth (scoped JWT, role=authenticated)
+5. Verifies app_metadata claims (user_role=agent, subagent_type=researcher, agent_id)
+6. Retrieves assigned active task from 'tasks' table under RLS
+7. Validates company/task consistency (task company_id matches expected_company_id)
+8. Reads assigned company under RLS
+9. Transitions task from 'pending' to 'in_progress' only after preflight & consistency validation succeeds
+10. Persists structured research_reports record
+11. Persists atomic research_findings records (asserting all succeed)
+12. Logs research completion in 'activities'
+13. Transitions task to 'completed' (completed_at synchronized and verified)
 """
 
 import argparse
@@ -33,6 +36,54 @@ from .config import Config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("researcher.runner")
+
+APPROVED_DEV_PROJECT_REF = "vyfqmrdznmocnmzyjjcj"
+APPROVED_DEV_SUPABASE_URL = "https://vyfqmrdznmocnmzyjjcj.supabase.co"
+
+
+def normalize_supabase_url(url: Optional[str]) -> str:
+    """Normalizes a Supabase URL for robust comparison."""
+    if not url or not isinstance(url, str):
+        return ""
+    cleaned = url.strip().rstrip("/")
+    if "://" in cleaned:
+        scheme, rest = cleaned.split("://", 1)
+        return f"{scheme.lower()}://{rest.lower()}"
+    return cleaned.lower()
+
+
+def validate_development_environment(config: Config) -> None:
+    """
+    Fail-closed environment guard.
+    Enforces that the Researcher Runner operates strictly against the approved
+    Supabase Development project ref and URL before any network or database operation.
+    Fails closed before any write, task transition, or other mutation.
+    Never exposes passwords, keys, or tokens in error messages.
+    """
+    if not config:
+        raise ValueError("Environment guard failure: Configuration object is required.")
+
+    project_ref = getattr(config, "project_ref", None)
+    if not project_ref or not str(project_ref).strip():
+        raise ValueError("Environment guard failure: SUPABASE_PROJECT_REF is missing or empty.")
+
+    clean_ref = str(project_ref).strip()
+    if clean_ref != APPROVED_DEV_PROJECT_REF:
+        raise ValueError(
+            f"Environment guard failure: Unauthorized project ref '{clean_ref}'. "
+            f"Expected approved development project ref '{APPROVED_DEV_PROJECT_REF}'."
+        )
+
+    supabase_url = getattr(config, "supabase_url", None)
+    if not supabase_url or not str(supabase_url).strip():
+        raise ValueError("Environment guard failure: SUPABASE_URL is missing or empty.")
+
+    normalized_url = normalize_supabase_url(str(supabase_url))
+    if normalized_url != APPROVED_DEV_SUPABASE_URL:
+        raise ValueError(
+            f"Environment guard failure: Unauthorized Supabase URL '{normalized_url}'. "
+            f"Expected approved development URL '{APPROVED_DEV_SUPABASE_URL}'."
+        )
 
 
 def validate_research_payload(
@@ -85,6 +136,7 @@ def validate_research_payload(
 def run_researcher_vertical_slice(
     config: Config,
     task_id: Optional[str] = None,
+    expected_company_id: Optional[str] = None,
     research_summary: Optional[str] = None,
     recommended_angle: Optional[str] = None,
     overall_confidence: str = "high",
@@ -92,7 +144,10 @@ def run_researcher_vertical_slice(
     findings: Optional[List[Dict[str, Any]]] = None,
     proposed_contacts: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    # 1. Preflight input validation BEFORE ANY database or task mutation!
+    # 1. Enforce fail-closed Development environment guard BEFORE ANY network or db call!
+    validate_development_environment(config)
+
+    # 2. Preflight input validation BEFORE ANY database or task mutation!
     validate_research_payload(
         research_summary=research_summary,
         recommended_angle=recommended_angle,
@@ -101,7 +156,15 @@ def run_researcher_vertical_slice(
     )
     submitted_findings_count = len(findings)  # type: ignore[arg-type]
 
-    # 2. Authenticate with Supabase Auth using scoped credentials
+    # 3. Explicit expected company ID validation (required for live execution consistency)
+    if not expected_company_id or not str(expected_company_id).strip():
+        raise ValueError(
+            "Missing required 'expected_company_id'. An explicit target company ID must be provided "
+            "to guarantee company/task consistency before execution."
+        )
+    clean_expected_company_id = str(expected_company_id).strip()
+
+    # 4. Authenticate with Supabase Auth using scoped credentials
     logger.info("Authenticating Researcher via Supabase GoTrue endpoint (%s)...", config.supabase_url)
     auth_client = SupabaseAuthClient(config.supabase_url, config.anon_key)
     auth_result = auth_client.sign_in_with_password(
@@ -110,34 +173,41 @@ def run_researcher_vertical_slice(
     )
     claims = auth_result["claims"]
 
-    # 3. Verify claims under Section 3
+    # 5. Verify claims under Section 3
     auth_client.verify_researcher_claims(claims, config.researcher_agent_id)
     access_token = auth_result["access_token"]
 
-    # 4. Initialize PostgREST client with authenticated agent JWT
+    # 6. Initialize PostgREST client with authenticated agent JWT
     client = PostgrestClient(config.supabase_url, config.anon_key, access_token)
     agent = ResearcherAgent(client, config.researcher_agent_id)
 
-    # 5. Acquire assigned active task
+    # 7. Retrieve assigned active task (read-only query under RLS)
     task = agent.get_assigned_active_task(task_id)
     actual_task_id = task["id"]
-    company_id = task["company_id"]
-    logger.info("Acquired assigned task %s for company %s", actual_task_id, company_id)
+    task_company_id = task.get("company_id")
+    logger.info("Retrieved assigned active task %s for company %s", actual_task_id, task_company_id)
 
-    # 6. Read assigned company (RLS verifies active task scope)
-    company = agent.read_assigned_company(company_id)
-    domains = agent.read_company_domains(company_id)
-    company_name = company.get("name", company_id)
+    # 8. Explicit company/task consistency verification BEFORE ANY MUTATION
+    if not task_company_id or str(task_company_id).strip() != clean_expected_company_id:
+        raise ValueError(
+            f"Company/Task consistency mismatch: Assigned task '{actual_task_id}' is associated with "
+            f"company '{task_company_id}', but expected target company is '{clean_expected_company_id}'."
+        )
+
+    # 9. Read assigned company (RLS verifies active task scope)
+    company = agent.read_assigned_company(clean_expected_company_id)
+    domains = agent.read_company_domains(clean_expected_company_id)
+    company_name = company.get("name", clean_expected_company_id)
     company_domain = company.get("primary_domain", "unknown")
     logger.info("Company verified: %s (Domain: %s)", company_name, company_domain)
 
-    # 7. Transition task to 'in_progress' only after preflight validation succeeds
+    # 10. Transition task to 'in_progress' only after preflight & consistency validation succeeds
     if task["status"] == "pending":
         task = agent.transition_task_in_progress(actual_task_id)
 
-    # 8. Persist structured research report
+    # 11. Persist structured research report
     report = agent.persist_research_report(
-        company_id=company_id,
+        company_id=clean_expected_company_id,
         summary=research_summary,  # type: ignore[arg-type]
         recommended_angle=recommended_angle,  # type: ignore[arg-type]
         overall_confidence=overall_confidence,
@@ -148,10 +218,10 @@ def run_researcher_vertical_slice(
         raise RuntimeError("Failed to persist research report: no report id returned")
     logger.info("Persisted research report: %s", report_id)
 
-    # 9. Persist atomic research findings
+    # 12. Persist atomic research findings
     persisted_findings = agent.persist_research_findings(
         report_id=report_id,
-        company_id=company_id,
+        company_id=clean_expected_company_id,
         findings=findings,  # type: ignore[arg-type]
     )
     persisted_count = len(persisted_findings)
@@ -164,10 +234,10 @@ def run_researcher_vertical_slice(
             "Halting workflow before task completion."
         )
 
-    # 10. Record completion activity
+    # 13. Record completion activity
     agent.record_activity(
-        company_id=company_id,
-        subject=f"Company Research Completed: {company['name']}",
+        company_id=clean_expected_company_id,
+        subject=f"Company Research Completed: {company_name}",
         description=f"Deep research synthesis completed with {persisted_count} findings.",
         metadata={
             "report_id": report_id,
@@ -176,14 +246,14 @@ def run_researcher_vertical_slice(
         },
     )
 
-    # 11. Complete task (triggers automatic completed_at synchronization)
+    # 14. Complete task (triggers automatic completed_at synchronization)
     completed_task = agent.complete_task(actual_task_id)
     logger.info("Task %s completed at: %s", actual_task_id, completed_task.get("completed_at"))
 
     # Assemble Contract 3 compliant output payload
     return {
         "task_id": actual_task_id,
-        "company_id": company_id,
+        "company_id": clean_expected_company_id,
         "research_report_id": report_id,
         "research_summary": research_summary,
         "recommended_angle": recommended_angle,
@@ -200,6 +270,7 @@ def main():
     parser = argparse.ArgumentParser(description="Researcher Agent Vertical Slice Runner")
     parser.add_argument("--payload-file", required=True, help="Path to JSON file containing research payload")
     parser.add_argument("--task-id", help="Optional specific task UUID to acquire")
+    parser.add_argument("--expected-company-id", help="Explicit expected company UUID (defaults to payload company_id)")
     args = parser.parse_args()
 
     config = Config.load()
@@ -210,6 +281,7 @@ def main():
     result = run_researcher_vertical_slice(
         config=config,
         task_id=args.task_id or payload.get("task_id"),
+        expected_company_id=args.expected_company_id or payload.get("company_id"),
         research_summary=payload.get("research_summary"),
         recommended_angle=payload.get("recommended_angle"),
         overall_confidence=payload.get("overall_confidence", "high"),

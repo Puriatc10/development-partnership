@@ -54,7 +54,7 @@ Actual public-source web research was conducted across official Refokus properti
 - **Agency Analytics & Verified Profiles:** `https://clutch.co/profile/refokus`
 
 ### Research Findings Classification:
-- **7 Verified Facts:** Documenting business model, Webflow Enterprise Partner tier, co-founders (Leo Zakour, Steffi Zakour), Refokus Tools platform, high-growth client roster (Meridian, Arqitel, BCG, Yahoo!), team size (~10–49 employees, 20–25 core), and pricing minimums (\$10k+, \$150–\$199/hr).
+- **8 Verified Facts:** Documenting business model, Webflow Enterprise Partner tier, co-founders (Leo Zakour, Steffi Zakour), Refokus Tools platform, high-growth client roster (Meridian, Arqitel, BCG, Yahoo!), team size (~10–49 employees, 20–25 core), reconciled directory pricing estimates (observed Clutch profile \$25k+ min / \$100–\$149/hr as of 2026-11-08 vs. date-unverified historical \$10k+ / \$150–\$199/hr directory estimates; not confirmed direct company contract pricing), and ongoing growth/delivery volume signals (200+ projects).
 - **2 Strategic Hypotheses:** Evaluating the high-leverage fit of white-label backend capacity to expand Refokus contract values, and identifying Webflow frontend complexity bottlenecks.
 - **3 Explicit Information Gaps (`TBD`):** Cataloging unverified backend infrastructure providers, subcontracting policies, and co-founder partnership receptivity.
 
@@ -74,7 +74,7 @@ python -m agents.researcher.runner `
 ### Execution Log Trace:
 1. **Authentication:** Authenticated via Supabase GoTrue endpoint (`https://vyfqmrdznmocnmzyjjcj.supabase.co`) as `researcher.v1@agents.internal`.
 2. **Claim Verification:** Validated JWT claims (`user_role = agent`, `subagent_type = researcher`, `agent_id = hermes-researcher-v1`, `sub = 23f94f9d-1906-498e-acf0-017555b97c87`).
-3. **Task Acquisition:** Successfully queried and locked task `cf41afa8-5b26-4353-b645-bd5524751e07`.
+3. **Task Retrieval:** Successfully retrieved assigned active task `cf41afa8-5b26-4353-b645-bd5524751e07`.
 4. **Company Scope Verification:** Verified access to company `1afd5547-ce67-45d3-8aaa-35619514f835` (`Refokus`).
 5. **State Transition:** Transitioned task status to `in_progress`.
 6. **Report Persistence:** Inserted `research_reports` record `050de7d6-ae17-458b-8e00-490b7c95d020` under RLS.
