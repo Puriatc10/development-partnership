@@ -81,8 +81,7 @@ def validate_development_environment(config: Config) -> None:
     normalized_url = normalize_supabase_url(str(supabase_url))
     if normalized_url != APPROVED_DEV_SUPABASE_URL:
         raise ValueError(
-            f"Environment guard failure: Unauthorized Supabase URL '{normalized_url}'. "
-            f"Expected approved development URL '{APPROVED_DEV_SUPABASE_URL}'."
+            "Environment guard failure: Supabase URL does not match the approved Development endpoint."
         )
 
 

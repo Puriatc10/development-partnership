@@ -15,6 +15,7 @@ Verifies:
 11. Missing project ref or URL is rejected by fail-closed Development environment guard.
 12. Missing expected company ID is rejected before authentication or task mutation.
 13. Mismatched company ID is rejected before ANY task mutation or database write.
+14. Malformed URL containing credentials is rejected and credentials are not leaked in the error.
 """
 
 import unittest
@@ -343,7 +344,7 @@ class TestRunnerValidationAndIntegrity(unittest.TestCase):
                     recommended_angle="Valid angle",
                     findings=self.valid_findings,
                 )
-            self.assertIn("Unauthorized Supabase URL", str(ctx.exception))
+            self.assertIn("Supabase URL does not match the approved Development endpoint", str(ctx.exception))
             mock_auth.assert_not_called()
 
     def test_11_missing_project_ref_or_url_rejected_before_mutation(self):
@@ -436,6 +437,33 @@ class TestRunnerValidationAndIntegrity(unittest.TestCase):
         mock_agent.persist_research_findings.assert_not_called()
         mock_agent.record_activity.assert_not_called()
         mock_agent.complete_task.assert_not_called()
+
+    def test_14_malformed_url_with_credentials_sanitized_in_error(self):
+        """Guard rejects malformed URL with userinfo and does NOT leak credentials in the error."""
+        sensitive_url = "https://dummy-user:dummy-password@unexpected.example.com"
+        bad_config = Config(
+            project_ref="vyfqmrdznmocnmzyjjcj",
+            supabase_url=sensitive_url,
+            anon_key="mock_key",
+            researcher_email="researcher.v1@agents.internal",
+            researcher_password="mock_pw",
+            researcher_agent_id="hermes-researcher-v1",
+        )
+        with patch("agents.researcher.runner.SupabaseAuthClient") as mock_auth:
+            with self.assertRaises(ValueError) as ctx:
+                run_researcher_vertical_slice(
+                    config=bad_config,
+                    expected_company_id="comp-uuid-1",
+                    research_summary="Valid summary",
+                    recommended_angle="Valid angle",
+                    findings=self.valid_findings,
+                )
+            error_msg = str(ctx.exception)
+            self.assertIn("Supabase URL does not match the approved Development endpoint", error_msg)
+            self.assertNotIn("dummy-user", error_msg)
+            self.assertNotIn("dummy-password", error_msg)
+            self.assertNotIn("unexpected.example.com", error_msg)
+            mock_auth.assert_not_called()
 
 
 if __name__ == "__main__":
