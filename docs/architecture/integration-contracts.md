@@ -160,8 +160,13 @@ Business code is not edited during a replacement. If it must be, the contract wa
 
 | Adapter | Interface | Unit/contract tests | Live verification |
 |---|---|---|---|
-| Crawl4AI | designed | pending | **blocked** (BLK-02 docker, endpoint unknown) |
-| GPT Researcher | designed | pending | **blocked** (BLK-03 credentials) |
-| OpenGTM | designed | pending | **blocked** (endpoint/deployment unverified) |
+| Crawl4AI | implemented against verified v0.9.5 surface | 8 contract tests | **no** — BLK-02 (Docker daemon down) |
+| GPT Researcher | implemented against verified v3.8.0 surface (incl. required `repo_name`/`branch_name`) | 7 contract tests | **no** — BLK-03 (no model/search credentials) |
+| OpenGTM | contract fixed; **discovery route deliberately unconfigured** | 6 contract tests | **no** — project identity + route unresolved (D-1/D-5) |
 
-No claim of working integration is made until the live column is filled with a timestamp and a response id.
+Facts and licence analysis: `reports/eryndex/integration-verification.md` and
+`docs/architecture/integrations/provider-facts.md`. No claim of a working
+integration is made until the live column names a response id and timestamp.
+
+Constants now pinned by code: Crawl4AI `0.9.5`, GPT Researcher `3.8.0` (PyPI
+`0.17.0` — version skew documented), OpenGTM `3.0.0`.

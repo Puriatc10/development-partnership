@@ -1,11 +1,18 @@
 """GPT Researcher adapter — ``research`` capability.
 
-The adapter returns a *report plus sources*, not findings. Turning prose into
-atomic, categorized findings is the intelligence layer's job (it needs evidence
-and citation checks); a provider is not trusted to grade its own confidence.
+Surface verified against upstream v3.8.0 (GitHub, 2026-11-09; PyPI lags at
+0.17.0 — pin both) — **Apache-2.0 per LICENSE/GitHub API, but MIT per
+pyproject/PyPI/gptr.dev: a licensing conflict to resolve before shipping**.
 
-Server surface is **unverified** here (BLK-03: no model/retriever credentials),
-so ``endpoint_verified`` is ``False`` and every result carries a warning.
+Self-hosted only (no SaaS): ``uvicorn server.app:app`` on :8000, and
+``POST /report/`` **requires ``repo_name`` and ``branch_name``** (send empty
+strings, there are no defaults) with ``tone`` drawn from a closed enum — a bad
+tone is a 500, not a 422. **The server has no authentication at all**, so it must
+never be exposed beyond the internal network.
+
+The adapter returns a *report plus sources*, not findings: turning prose into
+atomic categorized findings is the intelligence layer's job, and a provider is
+not trusted to grade its own confidence.
 """
 
 from __future__ import annotations
@@ -20,12 +27,14 @@ from contracts.provider import Evidence, ProviderRequest, ProviderResult
 from ..base import BaseProvider, ProviderConfig
 
 QUESTIONS = {"services", "tech_stack", "clients", "team", "growth", "engineering_gaps", "pricing"}
-UNVERIFIED = "gpt-researcher endpoint shape unverified (see reports/eryndex/integration-verification.md)"
+# Tone enum in gpt-researcher; anything else raises inside the provider (HTTP 500).
+TONES = {"objective", "formal", "analytical", "persuasive", "informative", "explanatory", "descriptive"}
+UNVERIFIED = "gpt-researcher: documented surface (v3.8.0) not yet verified against a live server"
 
 
 class GPTResearcherProvider(BaseProvider):
     name = "gpt_researcher"
-    version = "unverified"
+    version = "3.8.0"
     capability = "research"
     health_path = "/health"
     endpoint_verified = False
@@ -57,6 +66,11 @@ class GPTResearcherProvider(BaseProvider):
             raise ProviderError(
                 "schema_violation", "'max_sources' must be between 1 and 50", provider=self.name
             )
+        tone = payload.get("tone", "objective")
+        if tone not in TONES:
+            raise ProviderError(
+                "schema_violation", f"'tone' must be one of {sorted(TONES)}", provider=self.name
+            )
 
     @staticmethod
     def build_task(payload: Mapping[str, Any]) -> str:
@@ -77,8 +91,11 @@ class GPTResearcherProvider(BaseProvider):
             "task": self.build_task(payload),
             "report_type": payload.get("report_type", "research_report"),
             "report_source": payload.get("report_source", "web"),
-            "tone": "objective",
+            "tone": payload.get("tone", "objective"),
             "max_sources": int(payload.get("max_sources", 12)),
+            # Required by POST /report/ with no server-side defaults (v3.8.0).
+            "repo_name": "",
+            "branch_name": "",
         }
         resp = self._post(self.report_path, body, timeout)
         self._raise_for_status(resp)

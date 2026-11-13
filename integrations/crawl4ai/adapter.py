@@ -1,14 +1,17 @@
 """Crawl4AI adapter — ``crawl`` capability.
 
-Crawl4AI's HTTP surface is **not yet verified** in this environment (BLK-02:
-Docker daemon down). The request/response shaping below is written against the
-documented ``POST /crawl`` operation and is deliberately tolerant of envelope
-variation, so a verified endpoint can be plugged in through
-``ProviderConfig.paths`` without touching workflow code.
+Surface verified against upstream v0.9.5 (2026-10-14, Apache-2.0): self-hosted
+Docker image ``unclecode/crawl4ai`` on port **11235**, ``POST /crawl`` with
+``{"urls": [...], "browser_config": {...}, "crawler_config": {...}}``,
+``GET /health``, Bearer static token or HS256 JWT, fail-closed auth middleware.
+Error taxonomy maps cleanly onto the provider contract: 413 (body budget),
+429 (rate limit), 503 (queue full), **504 (wall-clock budget → timeout)**,
+400 (unknown config key).
 
-Verification status is tracked in ``reports/eryndex/integration-verification.md``.
-Until that file records a live response, ``endpoint_verified`` stays ``False``
-and results carry a warning.
+**Not yet live-verified here** (BLK-02: Docker daemon down), so
+``endpoint_verified`` stays ``False`` and results carry a warning. Verification
+evidence: ``reports/eryndex/integration-verification.md`` and
+``docs/architecture/integrations/provider-facts.md``.
 """
 
 from __future__ import annotations
@@ -23,12 +26,12 @@ from contracts.provider import Evidence, ProviderRequest, ProviderResult
 from ..base import BaseProvider, ProviderConfig
 
 VALID_EXTRACT = {"text", "links", "metadata"}
-UNVERIFIED = "crawl4ai endpoint shape unverified (see reports/eryndex/integration-verification.md)"
+UNVERIFIED = "crawl4ai: documented surface (v0.9.5) not yet verified against a live server"
 
 
 class Crawl4AIProvider(BaseProvider):
     name = "crawl4ai"
-    version = "unverified"
+    version = "0.9.5"
     capability = "crawl"
     health_path = "/health"
     endpoint_verified = False

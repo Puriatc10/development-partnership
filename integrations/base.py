@@ -34,6 +34,8 @@ _STATUS_TO_CODE: dict[int, str] = {
     413: "budget_exceeded",
     422: "schema_violation",
     429: "rate_limited",
+    # Crawl4AI uses 504 for its wall-clock budget (verified v0.9.5).
+    504: "timeout",
 }
 
 
@@ -137,7 +139,12 @@ class RequestsTransport(HttpTransport):
 
 @dataclass(frozen=True)
 class ProviderConfig:
-    """Explicit, environment-backed configuration. No secret defaults."""
+    """Explicit, environment-backed configuration. No secret defaults.
+
+    ``token_provider`` covers providers that do not accept a static bearer
+    token (OpenGTM uses an OAuth2 password grant). It is called per request and
+    is expected to cache the token itself.
+    """
 
     name: str
     base_url: str = ""
@@ -146,6 +153,7 @@ class ProviderConfig:
     max_retries: int = 2
     paths: Mapping[str, str] = field(default_factory=dict)
     extra_headers: Mapping[str, str] = field(default_factory=dict)
+    token_provider: Optional[Callable[[], str]] = None
 
     def path(self, name: str, default: str) -> str:
         return self.paths.get(name, default)
@@ -188,7 +196,9 @@ class BaseProvider:
 
     def headers(self) -> dict[str, str]:
         h = {"Accept": "application/json", "Content-Type": "application/json"}
-        if self.config.api_token:
+        if self.config.token_provider is not None:
+            h["Authorization"] = f"Bearer {self.config.token_provider()}"
+        elif self.config.api_token:
             h["Authorization"] = f"Bearer {self.config.api_token}"
         h.update(dict(self.config.extra_headers))
         return h

@@ -35,12 +35,13 @@ A work item is `COMPLETED` only with a verification artefact (test output, DB re
 
 | ID | Item | Owner | Status | Blocked by |
 |---|---|---|---|---|
-| W-2.1 | Crawl4AI adapter (crawl capability) | Integration Eng. | IN_PROGRESS | BLK-02 (docker), endpoint verification |
-| W-2.2 | GPT Researcher adapter (research capability) | Integration Eng. | IN_PROGRESS | BLK-03 (LLM/search keys) |
-| W-2.3 | OpenGTM adapter (discover capability) | Integration Eng. | IN_PROGRESS | endpoint/deployment unverified |
-| W-2.4 | Provider health checks + failure normalization | Integration Eng. | COMPLETED (code) | verified by contract tests |
+| W-2.1 | Crawl4AI adapter (crawl capability) | Integration Eng. | IN_PROGRESS — surface verified v0.9.5, code aligned | live check needs BLK-02 |
+| W-2.2 | GPT Researcher adapter (research capability) | Integration Eng. | IN_PROGRESS — surface verified v3.8.0, required fields fixed | live check needs BLK-03 |
+| W-2.3 | OpenGTM adapter (discover capability) | Integration Eng. | BLOCKED — project identity + discovery route unresolved | D-1, D-5 |
+| W-2.4 | Provider health checks + failure normalization | Integration Eng. | COMPLETED (code) | 146 tests incl. 504/token/route cases |
 | W-2.5 | Live deployment of providers (compose) | Integration Eng. | BLOCKED | BLK-02 |
-| W-2.6 | License & version notices for each provider | Integration Eng. | BLOCKED | verification evidence pending |
+| W-2.6 | License & version notices for each provider | Integration Eng. | COMPLETED | `reports/eryndex/integration-verification.md` §1 (AGPL / Apache-vs-MIT conflict recorded) |
+| W-2.7 | Decide OpenGTM identity and AGPL acceptability | Operator | BLOCKED | D-1, D-2 |
 
 ## Phase 3 — Discovery integration
 
@@ -84,11 +85,12 @@ A work item is `COMPLETED` only with a verification artefact (test output, DB re
 
 | ID | Item | Owner | Status | Evidence |
 |---|---|---|---|---|
-| W-8.1 | Portfolio reference inspection (design system + content) | Brand Eng. | IN_PROGRESS | `docs/brand/eryndex-portfolio-analysis.md` |
-| W-8.2 | Claim-safety audit of existing copy | Brand Eng. | IN_PROGRESS | same document |
-| W-8.3 | `eryndex.net` site structure + content plan | Brand Eng. | NOT_STARTED | — |
+| W-8.1 | Portfolio reference inspection (design system + content) | Brand Eng. | COMPLETED | `docs/brand/eryndex-portfolio-analysis.md` (717 lines, tokens traced to declarations) |
+| W-8.2 | Claim-safety audit of existing copy | Brand Eng. | COMPLETED | same document: 33 claims with safe rewrites + 7 copy rules |
+| W-8.3 | `eryndex.net` site structure + content plan | Brand Eng. | IN_PROGRESS | IA + 11-section homepage proposed in the analysis; build not started |
 | W-8.4 | Deployable portfolio implementation | Brand Eng. | NOT_STARTED | — (no DNS/hosting changes without authorization) |
 | W-8.5 | Brand alignment across repo artifacts | Orchestrator | NOT_STARTED | — |
+| W-8.6 | Confirm founder profile facts before any publish | Operator | BLOCKED | BLK-05 |
 
 ## Phase 9–10 — Evaluation and readiness
 
@@ -104,11 +106,33 @@ A work item is `COMPLETED` only with a verification artefact (test output, DB re
 
 | ID | Blocker | Unblocks |
 |---|---|---|
-| BLK-01 | No DDL credentials / PAT for `vyfqmrdznmocnmzyjjcj` | W-3.2, W-6.4, all new tables |
-| BLK-02 | Docker daemon not running | W-2.5, live provider verification |
+| BLK-01 | No DDL credentials / PAT for `vyfqmrdznmocnmzyjjcj` | applying `supabase/migrations/pending/`, all new tables |
+| BLK-02 | Docker daemon not running | live provider verification, W-2.5 |
 | BLK-03 | No LLM / search credentials | live research runs, W-2.2 |
-| BLK-04 | No agent identities for Discovery/Qualification | W-3.5, live agent runs |
+| BLK-04 | No agent identities for Discovery/Qualification | live agent runs under RLS |
 | BLK-05 | Portfolio profile details pending approval | any public publish |
+
+## Decisions needed (owner: human operator)
+
+| ID | Decision | Default if unanswered |
+|---|---|---|
+| D-1 | Which OpenGTM (`debpalash/OpenGTM`, Go+AGPL, vs `buildingopen/opengtm`, MIT, stale) | discovery stays blocked |
+| D-2 | Accept AGPL-3.0 network copyleft for the discovery component? | assume no; discovery stays blocked |
+| D-3 | Resolve GPT Researcher licence conflict (Apache-2.0 vs MIT) | treat as Apache-2.0, record the conflict |
+| D-5 | Discovery route: documented endpoint vs a thin service over OpenGTM's API | no discovery adapter wired |
+
+## Security work items (from `reports/eryndex/security-findings.md`)
+
+| ID | Item | Status |
+|---|---|---|
+| W-S1 | H-01 suppression write path (SECURITY DEFINER triggers) | AUTHORED, unapplied |
+| W-S2 | H-02 agent task transition whitelist | AUTHORED, unapplied |
+| W-S3 | H-03 outreach qualification precondition | AUTHORED, unapplied |
+| W-S4 | H-04 single approved scorecard per company | AUTHORED, unapplied |
+| W-S5 | H-05 duplicate-domain guard | AUTHORED, unapplied |
+| W-S6 | H-06 composite FK `ON DELETE SET NULL` column list | OPEN |
+| W-S7 | H-07 reconcile the two delivery expansion files | OPEN (needs D-4-style decision) |
+| W-S8 | H-08/H-09 seed file and PostgreSQL version drift | OPEN |
 
 ## Rules for this board
 

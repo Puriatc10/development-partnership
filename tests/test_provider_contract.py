@@ -33,7 +33,9 @@ class FakeTransport(HttpTransport):
         self.calls = []
 
     def request(self, method, url, *, json_body=None, headers=None, timeout=60.0):
-        self.calls.append({"method": method, "url": url, "body": json_body, "timeout": timeout})
+        self.calls.append(
+            {"method": method, "url": url, "body": json_body, "timeout": timeout, "headers": dict(headers or {})}
+        )
         item = self.responses.pop(0)
         if isinstance(item, Exception):
             raise item
@@ -268,7 +270,12 @@ def test_research_rejects_empty_report():
 def discover_provider(responses):
     transport = FakeTransport(responses)
     provider = OpenGTMProvider(
-        ProviderConfig(name="opengtm", base_url="http://opengtm:8080"),
+        ProviderConfig(
+            name="opengtm",
+            base_url="http://opengtm:3000",
+            # Route is configuration, not assumption: it must be verified upstream first.
+            paths={"discover": "/api/v1/discover"},
+        ),
         transport=transport,
         sleep=lambda _: None,
     )
@@ -324,6 +331,73 @@ def test_discovery_skips_candidates_without_domain_but_returns_usable_ones():
     result = provider.execute(req("discover", discover_payload(sources=["clutch"])))
     assert result.status == "partial"
     assert [c["name"] for c in result.data["candidates"]] == ["Good"]
+
+
+def test_discovery_without_a_verified_route_fails_closed():
+    """No default endpoint: an unverified discovery route is not guessed."""
+    with pytest.raises(ProviderError) as exc:
+        OpenGTMProvider(ProviderConfig(name="opengtm", base_url="http://opengtm:3000"))
+    assert exc.value.code == "not_configured"
+
+
+# --- provider specifics verified against upstream docs --------------------
+
+
+def test_crawl4ai_wall_clock_504_is_a_timeout_not_a_generic_failure():
+    transport = FakeTransport([TransportResponse(504, '{"detail": "wall clock exceeded"}')])
+    provider = Crawl4AIProvider(
+        ProviderConfig(name="crawl4ai", base_url="http://crawl4ai:11235", max_retries=0),
+        transport=transport,
+        sleep=lambda _: None,
+    )
+    with pytest.raises(ProviderError) as exc:
+        provider.execute(req("crawl", crawl_payload()))
+    assert exc.value.code == "timeout"
+    assert exc.value.retryable is True
+
+
+def test_research_request_carries_the_fields_the_server_requires():
+    provider, transport = research_provider(
+        [TransportResponse(200, '{"report": "ok", "sources": ["https://a.com"]}')]
+    )
+    provider.execute(req("research", research_payload()))
+    body = transport.calls[0]["body"]
+    assert body["repo_name"] == ""
+    assert body["branch_name"] == ""
+    assert body["tone"] == "objective"
+
+
+def test_research_rejects_a_tone_outside_the_provider_enum():
+    provider, transport = research_provider([])
+    with pytest.raises(ProviderError) as exc:
+        provider.execute(req("research", research_payload(tone="sarcastic")))
+    assert exc.value.code == "schema_violation"
+    assert transport.calls == []
+
+
+def test_token_provider_supplies_the_bearer_token():
+    """OpenGTM uses an OAuth2 password grant, so the token is fetched, not configured."""
+    variants = iter(["token-1", "token-2"])
+    transport = FakeTransport(
+        [
+            TransportResponse(200, '{"candidates": [{"name": "A", "domain": "a.com", "source_url": "https://clutch.co/a"}]}'),
+            TransportResponse(200, '{"candidates": [{"name": "B", "domain": "b.com", "source_url": "https://clutch.co/b"}]}'),
+        ]
+    )
+    provider = OpenGTMProvider(
+        ProviderConfig(
+            name="opengtm",
+            base_url="http://opengtm:3000",
+            paths={"discover": "/api/v1/discover"},
+            token_provider=lambda: next(variants),
+        ),
+        transport=transport,
+        sleep=lambda _: None,
+    )
+    provider.execute(req("discover", discover_payload()))
+    provider.execute(req("discover", discover_payload()))
+    assert transport.calls[0]["headers"]["Authorization"] == "Bearer token-1"
+    assert transport.calls[1]["headers"]["Authorization"] == "Bearer token-2"
 
 
 # --- result contract ------------------------------------------------------

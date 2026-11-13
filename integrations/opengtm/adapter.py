@@ -1,13 +1,24 @@
 """OpenGTM adapter — ``discover`` capability.
 
-OpenGTM produces *candidates*, never companies. The adapter returns normalized
-candidate records with provenance; staging and Human Gate 1 happen elsewhere
-(ADR-0005). It holds no credentials for the CRM and cannot write to it.
+**Two facts must be settled by a human before this adapter is wired up:**
 
-Deployment surface is **unverified** here: no endpoint, version or license has
-been confirmed yet, so ``endpoint_verified`` is ``False``, the path is
-configurable, and construction without a base_url fails closed as
-``not_configured``.
+1. **Which OpenGTM.** There are two unrelated projects with this name.
+   ``debpalash/OpenGTM`` (v3.0.0, 2026-09-24, **AGPL-3.0**, Go + Postgres 16 +
+   Redis, UI/API on :3000, ~4 GB RAM, no prebuilt images, no SaaS, OAuth2
+   password grant at ``POST /auth/token`` form-encoded, 376 routes, optional MCP
+   server on :3100) versus ``buildingopen/opengtm`` (MIT, Python, stale). AGPL-3.0
+   is network copyleft and constrains what Eryndex may ship if the component is
+   modified — a licensing decision, not an engineering one.
+2. **Which route performs discovery.** The canonical repo exposes settings and
+   provider routes; no documented "discover agencies" endpoint was verified.
+
+So: the capability contract is fixed, but the transport is configured, not
+assumed. ``ProviderConfig.paths["discover"]`` and a ``token_provider`` (OAuth2
+password grant) must be supplied from configuration until a live route is
+verified. Without them the adapter raises ``not_configured`` rather than guessing.
+
+OpenGTM produces *candidates*, never companies. It holds no CRM credentials and
+cannot write to it; staging and Human Gate 1 happen elsewhere (ADR-0005).
 """
 
 from __future__ import annotations
@@ -31,19 +42,27 @@ APPROVED_SOURCES = {
     "dribbble",
     "behance",
 }
-UNVERIFIED = "opengtm endpoint/deployment unverified (see reports/eryndex/integration-verification.md)"
+UNVERIFIED = "opengtm: discovery route and project identity unverified (see integration-verification.md)"
 
 
 class OpenGTMProvider(BaseProvider):
     name = "opengtm"
-    version = "unverified"
+    version = "3.0.0"
     capability = "discover"
     health_path = "/healthz"
     endpoint_verified = False
 
     def __init__(self, config: ProviderConfig, **kwargs: Any) -> None:
         super().__init__(config, **kwargs)
-        self.discover_path = config.path("discover", "/api/v1/discover")
+        # No default route: guessing a discovery endpoint would fabricate a contract.
+        self.discover_path = config.path("discover", "")
+        if not self.discover_path:
+            raise ProviderError(
+                "not_configured",
+                "opengtm: no discover path configured; supply ProviderConfig.paths['discover'] "
+                "after verifying the route (v3.0.0 exposes 376 routes, discovery not documented)",
+                provider=self.name,
+            )
 
     def validate(self, payload: Mapping[str, Any]) -> None:
         directive = payload.get("directive")
