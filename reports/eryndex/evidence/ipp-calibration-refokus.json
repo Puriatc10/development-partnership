@@ -1,0 +1,142 @@
+{
+  "rubric_version": "2.0.1",
+  "company_name": "Refokus",
+  "segment": "webflow_studio",
+  "region": null,
+  "dimensions": [
+    {
+      "key": "customer_flow",
+      "label": "Customer Flow",
+      "schema_column": "customer_flow_score",
+      "points_awarded": 5.0,
+      "max_points": 20.0,
+      "rationale": "Anchor 5 of 20 awarded (rubric L94): a few limited or weakly attributable client examples (rubric example: 1-2 projects). Supported by 0be0278b-c90b-4c09-9df7-251a4273f6de (verified_fact/high), d1fde468-bc7f-4ab3-9e3f-c23134a58d2c (verified_fact/high).",
+      "evidence_refs": [
+        "0be0278b-c90b-4c09-9df7-251a4273f6de",
+        "d1fde468-bc7f-4ab3-9e3f-c23134a58d2c"
+      ],
+      "confidence": "high",
+      "gap_notes": [
+        "Anchor 10 not awarded: fewer than three verifiable commercial client case studies were supplied (rubric L95)."
+      ],
+      "rubric_lines": "L62, L83-97; anchor L94"
+    },
+    {
+      "key": "development_demand",
+      "label": "Development Demand",
+      "schema_column": "development_demand_score",
+      "points_awarded": 5.0,
+      "max_points": 20.0,
+      "rationale": "Anchor 5 of 20 awarded (rubric L126): occasional simple custom code (snippets, embed widgets, form webhooks, CSS overrides). Supported by 226f1d17-4616-43d3-b4a7-570cf8f9110e (verified_fact/high).",
+      "evidence_refs": [
+        "226f1d17-4616-43d3-b4a7-570cf8f9110e"
+      ],
+      "confidence": "high",
+      "gap_notes": [
+        "TBD: Public records confirm heavy client-side use of Webflow, GSAP, JavaScript, and Three.js, but public documentation does not disclose their preferred backend runtime, cloud database providers (e.g. Supabase, Xano, AWS, Firebase), or external API middleware. (finding 21ce76e0-5c4f-4bac-bdfd-fa99fe502c52) - information gap, never assumed (rubric L342-345).",
+        "Anchor 10 not awarded: no API, external database, authentication or custom application logic was documented (rubric L127)."
+      ],
+      "rubric_lines": "L63, L115-129; anchor L126"
+    },
+    {
+      "key": "repeatability_orders",
+      "label": "Repeatability of Orders",
+      "schema_column": "repeatability_orders_score",
+      "points_awarded": 0.0,
+      "max_points": 15.0,
+      "rationale": "0 of 15 points (Zero-Evidence Rule, rubric L398-400): no verified finding satisfied any documented anchor for repeatability of orders (anchors: L64, L147-161).",
+      "evidence_refs": [],
+      "confidence": "unverified",
+      "gap_notes": [
+        "Zero here means the parameter is unverified, not that the prospect was shown to lack it (rubric L357, L436-440).",
+        "Anchor 4 not awarded: no post-delivery support, warranty or maintenance evidence (rubric L158)."
+      ],
+      "rubric_lines": "L64, L147-161; zero-evidence rubric L398-400"
+    },
+    {
+      "key": "technical_fit",
+      "label": "Technical Fit",
+      "schema_column": "technical_fit_score",
+      "points_awarded": 4.0,
+      "max_points": 15.0,
+      "rationale": "Anchor 4 of 15 awarded (rubric L193): limited compatibility: visual-builder delivery (closed ecosystem, rare custom code). Supported by 226f1d17-4616-43d3-b4a7-570cf8f9110e (verified_fact/high), f2c4efa9-acad-47e2-84b2-d771e698cf00 (verified_fact/high).",
+      "evidence_refs": [
+        "226f1d17-4616-43d3-b4a7-570cf8f9110e",
+        "f2c4efa9-acad-47e2-84b2-d771e698cf00"
+      ],
+      "confidence": "high",
+      "gap_notes": [
+        "TBD: Public records confirm heavy client-side use of Webflow, GSAP, JavaScript, and Three.js, but public documentation does not disclose their preferred backend runtime, cloud database providers (e.g. Supabase, Xano, AWS, Firebase), or external API middleware. (finding 21ce76e0-5c4f-4bac-bdfd-fa99fe502c52) - information gap, never assumed (rubric L342-345).",
+        "Anchor 8 not awarded: no Webflow/Framer delivery with external API requests (rubric L194)."
+      ],
+      "rubric_lines": "L65, L179-196; anchor L193"
+    },
+    {
+      "key": "business_size",
+      "label": "Business Size",
+      "schema_column": "business_size_score",
+      "points_awarded": 10.0,
+      "max_points": 10.0,
+      "rationale": "Anchor 10 of 10 awarded (rubric L228): established studio across the upper sweet spot (25-50 people); headcount 30 (origin: verified_fact). Corroborated by aee95008-7e6a-4517-9f94-d69a2ca6d8b7 (verified_fact/medium).",
+      "evidence_refs": [
+        "aee95008-7e6a-4517-9f94-d69a2ca6d8b7"
+      ],
+      "confidence": "high",
+      "gap_notes": [],
+      "rubric_lines": "L66, L214-228; anchor L228"
+    },
+    {
+      "key": "decision_maker_accessibility",
+      "label": "Decision-Maker Accessibility",
+      "schema_column": "decision_maker_accessibility_score",
+      "points_awarded": 3.0,
+      "max_points": 10.0,
+      "rationale": "Anchor 3 of 10 awarded (rubric L259): relevant founder/executive identified by name and role, without a direct channel. Supported by af32cd5c-f561-4c9f-a420-343d9812ec60 (verified_fact/high).",
+      "evidence_refs": [
+        "af32cd5c-f561-4c9f-a420-343d9812ec60"
+      ],
+      "confidence": "high",
+      "gap_notes": [
+        "TBD: Direct contact points for commercial technical partnerships (whether through CEO Leo Zakour or operations leadership Steffi Zakour) and their receptivity to white-label wholesale engineering capacity have not yet been tested. (finding 7df409cf-368b-45b8-a82a-ae31919790d2) - information gap, never assumed (rubric L342-345).",
+        "TBD: It is currently unverified whether Refokus handles all custom code strictly through internal senior front-end engineers or utilizes trusted white-label development subcontractors for technical overflow and backend integrations. (finding d60e0175-3da4-4003-96f1-186d2cbb4932) - information gap, never assumed (rubric L342-345).",
+        "Anchor 6 not awarded: no company-level contact channel was verified (rubric L260, L428)."
+      ],
+      "rubric_lines": "L67, L248-262; anchor L259"
+    },
+    {
+      "key": "commercial_fit",
+      "label": "Commercial Fit",
+      "schema_column": "commercial_fit_score",
+      "points_awarded": 5.0,
+      "max_points": 10.0,
+      "rationale": "Anchor 5 of 10 awarded (rubric L293): premium market positioning with documented premium budget indicators (e.g. $20k-$25k+ minimums or $100-$150+/hr rates). Supported by defcf7cf-24b2-47f5-a44e-5ba0854ac6b0 (verified_fact/medium).",
+      "evidence_refs": [
+        "defcf7cf-24b2-47f5-a44e-5ba0854ac6b0"
+      ],
+      "confidence": "medium",
+      "gap_notes": [
+        "Anchor 7 not awarded: no evidence of external software-engineering contracting (a general creative/freelancer network does not qualify) (rubric L294, L434)."
+      ],
+      "rubric_lines": "L68, L281-295; anchor L293"
+    }
+  ],
+  "total_score": 32.0,
+  "tier": "disqualified",
+  "tier_label": "Disqualified",
+  "recommended_action": "Total below the 40-point viability threshold: retained as disqualified pending human review (rubric L542).",
+  "disqualification_triggers": [],
+  "missing_evidence": [
+    "TBD [technology_stack] Public records confirm heavy client-side use of Webflow, GSAP, JavaScript, and Three.js, but public documentation does not disclose their preferred backend runtime, cloud database providers (e.g. Supabase, Xano, AWS, Firebase), or external API middleware. (finding 21ce76e0-5c4f-4bac-bdfd-fa99fe502c52) - information_gap_tbd scores zero (rubric L342-345).",
+    "TBD [team_structure] Direct contact points for commercial technical partnerships (whether through CEO Leo Zakour or operations leadership Steffi Zakour) and their receptivity to white-label wholesale engineering capacity have not yet been tested. (finding 7df409cf-368b-45b8-a82a-ae31919790d2) - information_gap_tbd scores zero (rubric L342-345).",
+    "TBD [other] It is currently unverified whether Refokus handles all custom code strictly through internal senior front-end engineers or utilizes trusted white-label development subcontractors for technical overflow and backend integrations. (finding d60e0175-3da4-4003-96f1-186d2cbb4932) - information_gap_tbd scores zero (rubric L342-345).",
+    "[repeatability_orders] 15 points unearned: Anchor 4 not awarded: no post-delivery support, warranty or maintenance evidence (rubric L158)."
+  ],
+  "overall_confidence": "medium",
+  "insufficient_evidence": false,
+  "verified_dimensions": 6,
+  "verified_fact_count": 8,
+  "evidence_coverage": 0.857,
+  "disqualified_by_score_only": true,
+  "needs_human_review": true,
+  "review_status": "draft"
+}

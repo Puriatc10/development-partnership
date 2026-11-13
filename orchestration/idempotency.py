@@ -7,23 +7,24 @@ and a second execution compares against what is already persisted.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from typing import Any, Iterable, Mapping, Sequence
+
+from contracts.keys import canonical_json, content_key
+
+# Re-exported for callers that imported the primitives from orchestration.
+__all__ = [
+    "canonical_json",
+    "content_key",
+    "describe_findings",
+    "provider_request_key",
+    "research_idempotency_key",
+    "strip_volatile",
+]
 
 # Keys that describe *how* a run happened rather than *what* it produced.
 _VOLATILE_KEYS = frozenset(
     {"trace_id", "started_at", "finished_at", "latency_ms", "run_id", "idempotency_key"}
 )
-
-
-def canonical_json(value: Any) -> str:
-    """Deterministic JSON: sorted keys, no whitespace, UTF-8 safe."""
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
-
-
-def content_key(value: Any) -> str:
-    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
 def _normalize_statement(text: str) -> str:

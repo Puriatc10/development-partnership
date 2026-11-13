@@ -56,10 +56,11 @@ A work item is `COMPLETED` only with a verification artefact (test output, DB re
 
 | ID | Item | Owner | Status | Blocked by |
 |---|---|---|---|---|
-| W-5.1 | IPP v2 engine (deterministic, citeable scoring) | Research & Intel Eng. | IN_PROGRESS | — |
-| W-5.2 | Engine test fixtures + calibration set | Research & Intel Eng. | IN_PROGRESS | W-5.1 |
-| W-5.3 | Scorecard → `lead_qualifications` persistence | CRM Eng. | NOT_STARTED | W-5.1, enum mapping verified from DDL |
-| W-5.4 | Human Gate 2 review path | CRM Eng. | NOT_STARTED | W-5.3 |
+| W-5.1 | IPP v2 engine (deterministic, citeable scoring) | Research & Intel Eng. | COMPLETED | — (`intelligence/ipp`, 45 tests) |
+| W-5.2 | Engine test fixtures + calibration set | Research & Intel Eng. | COMPLETED | `reports/eryndex/ipp-calibration.md` (real Refokus findings) |
+| W-5.3 | Scorecard → `lead_qualifications` persistence | CRM Eng. | COMPLETED (code) | `integrations/supabase/qualification_repository.py`, 21 tests; live write needs BLK-04 |
+| W-5.4 | Human Gate 2 review path | CRM Eng. | NOT_STARTED | W-5.3 live |
+| W-5.5 | Research briefs must target rubric anchors | Research & Intel Eng. | NOT_STARTED | calibration showed the gap |
 
 ## Phase 6 — Outreach and partnership operations
 
