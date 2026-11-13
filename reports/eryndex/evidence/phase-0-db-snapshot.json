@@ -1,0 +1,222 @@
+{
+  "captured_at": "2026-11-13T19:44:05.791577+00:00",
+  "project_ref": "vyfqmrdznmocnmzyjjcj",
+  "identity": "operator",
+  "tables": {
+    "companies": {
+      "status": 200,
+      "count": "1",
+      "columns": [
+        "city",
+        "country",
+        "created_at",
+        "discovery_details",
+        "discovery_source",
+        "headcount_max",
+        "headcount_min",
+        "headcount_verifiable",
+        "id",
+        "is_suppressed",
+        "lifecycle_stage",
+        "name",
+        "normalized_name",
+        "primary_domain",
+        "primary_segment",
+        "qualification_tier",
+        "research_status",
+        "secondary_segments",
+        "services_offered",
+        "suppression_date",
+        "suppression_reason",
+        "tech_stack",
+        "tech_stack_verifiable",
+        "timezone",
+        "updated_at",
+        "website_url"
+      ],
+      "sample_id": "1afd5547-ce67-45d3-8aaa-35619514f835"
+    },
+    "company_domains": {
+      "status": 200,
+      "count": "1",
+      "columns": [
+        "company_id",
+        "created_at",
+        "domain",
+        "id",
+        "is_primary"
+      ],
+      "sample_id": "4283788a-da88-434e-945e-5d00e8299b5e"
+    },
+    "contacts": {
+      "status": 200,
+      "count": "0",
+      "columns": [],
+      "note": "empty"
+    },
+    "tasks": {
+      "status": 200,
+      "count": "1",
+      "columns": [
+        "assigned_actor_identity",
+        "assigned_actor_type",
+        "campaign_id",
+        "company_id",
+        "completed_at",
+        "contact_id",
+        "created_at",
+        "description",
+        "due_date",
+        "id",
+        "priority",
+        "status",
+        "task_type",
+        "title",
+        "updated_at"
+      ],
+      "sample_id": "cf41afa8-5b26-4353-b645-bd5524751e07"
+    },
+    "research_reports": {
+      "status": 200,
+      "count": "1",
+      "columns": [
+        "company_id",
+        "created_at",
+        "gaps_and_unknowns",
+        "id",
+        "overall_confidence",
+        "recommended_angle",
+        "report_version",
+        "research_agent_identity",
+        "summary",
+        "updated_at"
+      ],
+      "sample_id": "050de7d6-ae17-458b-8e00-490b7c95d020"
+    },
+    "research_findings": {
+      "status": 206,
+      "count": "13",
+      "columns": [
+        "category",
+        "company_id",
+        "confidence",
+        "created_at",
+        "evidence_excerpt",
+        "evidence_url",
+        "finding_type",
+        "id",
+        "report_id",
+        "statement"
+      ],
+      "sample_id": "a7d83dbd-f8cd-41da-bbaf-a6b53b45279a"
+    },
+    "activities": {
+      "status": 200,
+      "count": "1",
+      "columns": [
+        "activity_type",
+        "company_id",
+        "contact_id",
+        "conversation_id",
+        "created_at",
+        "description",
+        "id",
+        "metadata",
+        "occurred_at",
+        "performed_by_actor_identity",
+        "performed_by_actor_type",
+        "subject"
+      ],
+      "sample_id": "3284498c-4bd3-48b8-acbc-788e8697344f"
+    },
+    "audit_logs": {
+      "status": 206,
+      "count": "3",
+      "columns": [
+        "action",
+        "actor_identity",
+        "actor_type",
+        "created_at",
+        "id",
+        "metadata",
+        "new_values",
+        "old_values",
+        "record_id",
+        "table_name"
+      ],
+      "sample_id": 2
+    },
+    "lead_qualifications": {
+      "status": 200,
+      "count": "0",
+      "columns": [],
+      "note": "empty"
+    },
+    "outreach_campaigns": {
+      "status": 200,
+      "count": "0",
+      "columns": [],
+      "note": "empty"
+    },
+    "outreach_messages": {
+      "status": 200,
+      "count": "0",
+      "columns": [],
+      "note": "empty"
+    },
+    "suppression_registry": {
+      "status": 200,
+      "count": "1",
+      "columns": [
+        "created_at",
+        "created_by_actor_identity",
+        "created_by_actor_type",
+        "id",
+        "identifier",
+        "reason",
+        "source",
+        "suppressed_at",
+        "target_type"
+      ],
+      "sample_id": "7bc6f5b8-8eec-4581-a099-ebe993e6b81b"
+    },
+    "conversations": {
+      "status": 200,
+      "count": "0",
+      "columns": [],
+      "note": "empty"
+    },
+    "conversation_messages": {
+      "status": 200,
+      "count": "0",
+      "columns": [],
+      "note": "empty"
+    },
+    "partnerships": {
+      "status": 404,
+      "count": null,
+      "error": "{\"code\":\"PGRST205\",\"details\":null,\"hint\":null,\"message\":\"Could not find the table 'public.partnerships' in the schema cache\"}"
+    },
+    "projects": {
+      "status": 404,
+      "count": null,
+      "error": "{\"code\":\"PGRST205\",\"details\":null,\"hint\":null,\"message\":\"Could not find the table 'public.projects' in the schema cache\"}"
+    },
+    "project_milestones": {
+      "status": 404,
+      "count": null,
+      "error": "{\"code\":\"PGRST205\",\"details\":null,\"hint\":null,\"message\":\"Could not find the table 'public.project_milestones' in the schema cache\"}"
+    },
+    "project_change_requests": {
+      "status": 404,
+      "count": null,
+      "error": "{\"code\":\"PGRST205\",\"details\":null,\"hint\":null,\"message\":\"Could not find the table 'public.project_change_requests' in the schema cache\"}"
+    }
+  },
+  "missing_designed_tables": [
+    "partnerships",
+    "projects",
+    "project_milestones",
+    "project_change_requests"
+  ]
+}

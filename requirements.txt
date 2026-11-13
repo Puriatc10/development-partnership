@@ -1,0 +1,7 @@
+# Runtime dependencies for the Eryndex platform (Python 3.12+).
+# The CRM client intentionally uses only the standard library + requests so the
+# agent runtime stays portable across Antigravity and Hermes.
+requests>=2.31,<3
+
+# Test / tooling
+pytest>=8,<10
