@@ -1,0 +1,545 @@
+{
+  "brief": {
+    "company": {
+      "domain": "northwind.studio",
+      "name": "Northwind Studio",
+      "segment": null,
+      "source_url": "https://webflow.com/experts/northwind-studio"
+    },
+    "objective": "Collect verifiable public evidence that can earn IPP v2 anchor points for this company. Each finding must cite a source URL and a verbatim excerpt.",
+    "output_contract": {
+      "fields": [
+        "finding_type (verified_fact|hypothesis|information_gap_tbd)",
+        "category (schema finding_category_type)",
+        "statement",
+        "confidence (high|medium|low|unverified)",
+        "evidence_url",
+        "evidence_excerpt"
+      ],
+      "rules": [
+        "verified_fact requires evidence_url and confidence high|medium",
+        "an unknown must be recorded as information_gap_tbd, never guessed",
+        "one claim per finding; do not bundle"
+      ]
+    },
+    "priority_dimensions": [
+      "repeatability_orders",
+      "decision_maker_accessibility",
+      "technical_fit"
+    ],
+    "prohibited_inferences": [
+      "Do not infer headcount, revenue, client names, rates, or contract terms from visual style or site size.",
+      "Do not convert a hypothesis into a verified fact because a completion target needs it.",
+      "Do not report a price range as the company's rate; directory estimates must be labelled as such, with dates.",
+      "Do not claim a decision-maker's receptiveness from a generic contact page.",
+      "Do not fabricate a case study, testimonial, or client logo that is not published."
+    ],
+    "rubric_version": "2.0.1",
+    "targets": [
+      {
+        "anchors": [
+          {
+            "attainment": "verified active commercial pipeline (quarterly case studies, enterprise client roster, public hiring or client intake signals)",
+            "points": 20,
+            "rubric_lines": "L97"
+          },
+          {
+            "attainment": "strong evidence of ongoing corporate/B2B customers and multiple projects (continuous stream of verified case studies or recognized brands)",
+            "points": 15,
+            "rubric_lines": "L96"
+          },
+          {
+            "attainment": "ongoing corporate/B2B client work across multiple verifiable projects (continuous stream or recognized brands)",
+            "points": 15,
+            "rubric_lines": "L96"
+          },
+          {
+            "attainment": "multiple identifiable real clients (rubric example: 3-5 verifiable commercial client case studies published within the last 12-18 months)",
+            "points": 10,
+            "rubric_lines": "L95"
+          },
+          {
+            "attainment": "a few limited or weakly attributable client examples (rubric example: 1-2 projects)",
+            "points": 5,
+            "rubric_lines": "L94"
+          }
+        ],
+        "dimension": "customer_flow",
+        "evidence_categories": [
+          "client_roster",
+          "growth_signals"
+        ],
+        "label": "Customer Flow",
+        "max_points": 20,
+        "priority": false,
+        "rubric_lines": "L62, L83-97",
+        "schema_column": "customer_flow_score"
+      },
+      {
+        "anchors": [
+          {
+            "attainment": "documented continuous demand for custom backend/logic work coupled with verifiable technical delivery bottlenecks or capacity constraints",
+            "points": 20,
+            "rubric_lines": "L129"
+          },
+          {
+            "attainment": "complex or repeated technical work (portals, dashboards, data sync, headless CMS, API middleware, platform migrations)",
+            "points": 15,
+            "rubric_lines": "L128"
+          },
+          {
+            "attainment": "projects involving third-party APIs, external databases, member authentication or custom JavaScript/React application logic",
+            "points": 10,
+            "rubric_lines": "L127"
+          },
+          {
+            "attainment": "occasional simple custom code (snippets, embed widgets, form webhooks, CSS overrides)",
+            "points": 5,
+            "rubric_lines": "L126"
+          }
+        ],
+        "dimension": "development_demand",
+        "evidence_categories": [
+          "pain_points",
+          "technology_stack"
+        ],
+        "label": "Development Demand",
+        "max_points": 20,
+        "priority": false,
+        "rubric_lines": "L63, L115-129",
+        "schema_column": "development_demand_score"
+      },
+      {
+        "anchors": [
+          {
+            "attainment": "stable recurring commercial model (dedicated retainers, continuous platform evolution) across the primary client base",
+            "points": 15,
+            "rubric_lines": "L161"
+          },
+          {
+            "attainment": "verified long-term contracts, recurring monthly retainers or multi-year rollout agreements with corporate clients",
+            "points": 12,
+            "rubric_lines": "L160"
+          },
+          {
+            "attainment": "ongoing maintenance, feature iteration or continuous development documented for a subset of clients",
+            "points": 8,
+            "rubric_lines": "L159"
+          },
+          {
+            "attainment": "occasional post-delivery support, warranty periods or sporadic maintenance requests",
+            "points": 4,
+            "rubric_lines": "L158"
+          }
+        ],
+        "dimension": "repeatability_orders",
+        "evidence_categories": [
+          "business_model",
+          "client_roster"
+        ],
+        "label": "Repeatability of Orders",
+        "max_points": 15,
+        "priority": true,
+        "rubric_lines": "L64, L147-161",
+        "schema_column": "repeatability_orders_score"
+      },
+      {
+        "anchors": [
+          {
+            "attainment": "strong technical overlap (Webflow/Framer + backend, APIs, databases or React) plus documented, standardized development workflows",
+            "points": 15,
+            "rubric_lines": "L196"
+          },
+          {
+            "attainment": "verified Webflow/Framer development combined with documented needs for backend architecture, custom APIs, external databases or bespoke React components",
+            "points": 12,
+            "rubric_lines": "L195"
+          },
+          {
+            "attainment": "some overlap: standard Webflow or Framer builds with occasional external API requests",
+            "points": 8,
+            "rubric_lines": "L194"
+          },
+          {
+            "attainment": "limited compatibility: visual-builder delivery (closed ecosystem, rare custom code)",
+            "points": 4,
+            "rubric_lines": "L193"
+          }
+        ],
+        "dimension": "technical_fit",
+        "evidence_categories": [
+          "scoping_maturity",
+          "technology_stack"
+        ],
+        "label": "Technical Fit",
+        "max_points": 15,
+        "priority": true,
+        "rubric_lines": "L65, L179-196",
+        "schema_column": "technical_fit_score"
+      },
+      {
+        "anchors": [
+          {
+            "attainment": "L225",
+            "headcount_range": "2-4",
+            "points": 3.0,
+            "rubric_lines": "very small micro-team (2-4 core people)"
+          },
+          {
+            "attainment": "L226",
+            "headcount_range": "5-9",
+            "points": 6.0,
+            "rubric_lines": "small boutique studio (5-9 people)"
+          },
+          {
+            "attainment": "L227",
+            "headcount_range": "10-24",
+            "points": 8.0,
+            "rubric_lines": "mid-sized studio inside the core sweet spot (10-24 people)"
+          },
+          {
+            "attainment": "L228",
+            "headcount_range": "25-50",
+            "points": 10.0,
+            "rubric_lines": "established studio across the upper sweet spot (25-50 people)"
+          }
+        ],
+        "dimension": "business_size",
+        "evidence_categories": [
+          "team_structure"
+        ],
+        "label": "Business Size",
+        "max_points": 10,
+        "priority": false,
+        "rubric_lines": "L66, L214-228",
+        "schema_column": "business_size_score"
+      },
+      {
+        "anchors": [
+          {
+            "attainment": "verifiable warm introduction, prior direct relationship or confirmed prior positive interaction",
+            "points": 10,
+            "rubric_lines": "L262"
+          },
+          {
+            "attainment": "direct personal route to the decision-maker (verified personal email or active LinkedIn/InMail channel)",
+            "points": 8,
+            "rubric_lines": "L261"
+          },
+          {
+            "attainment": "valid company-level channel (official inquiry/partnership inbox or contact form)",
+            "points": 6,
+            "rubric_lines": "L260"
+          },
+          {
+            "attainment": "relevant founder/executive identified by name and role, without a direct channel",
+            "points": 3,
+            "rubric_lines": "L259"
+          }
+        ],
+        "dimension": "decision_maker_accessibility",
+        "evidence_categories": [
+          "other",
+          "team_structure"
+        ],
+        "label": "Decision-Maker Accessibility",
+        "max_points": 10,
+        "priority": true,
+        "rubric_lines": "L67, L248-262",
+        "schema_column": "decision_maker_accessibility_score"
+      },
+      {
+        "anchors": [
+          {
+            "attainment": "explicitly verified acceptance of a white-label/wholesale partnership model",
+            "points": 10,
+            "rubric_lines": "L295"
+          },
+          {
+            "attainment": "premium positioning plus explicit evidence of engaging external software developers/engineering contractors",
+            "points": 7,
+            "rubric_lines": "L294"
+          },
+          {
+            "attainment": "premium market positioning with documented premium budget indicators (e.g. $20k-$25k+ minimums or $100-$150+/hr rates)",
+            "points": 5,
+            "rubric_lines": "L293"
+          },
+          {
+            "attainment": "limited commercial signal: standard B2B billing (e.g. $5k-$10k minimums) without premium cushion",
+            "points": 3,
+            "rubric_lines": "L292"
+          }
+        ],
+        "dimension": "commercial_fit",
+        "evidence_categories": [
+          "business_model",
+          "pricing_rates"
+        ],
+        "label": "Commercial Fit",
+        "max_points": 10,
+        "priority": false,
+        "rubric_lines": "L68, L281-295",
+        "schema_column": "commercial_fit_score"
+      }
+    ]
+  },
+  "brief_questions": [
+    "[Repeatability of Orders +15 / 15] Can we verify that stable recurring commercial model (dedicated retainers, continuous platform evolution) across the primary client base? (rubric L161)",
+    "[Repeatability of Orders +12 / 15] Can we verify that verified long-term contracts, recurring monthly retainers or multi-year rollout agreements with corporate clients? (rubric L160)",
+    "[Repeatability of Orders +8 / 15] Can we verify that ongoing maintenance, feature iteration or continuous development documented for a subset of clients? (rubric L159)",
+    "[Repeatability of Orders +4 / 15] Can we verify that occasional post-delivery support, warranty periods or sporadic maintenance requests? (rubric L158)",
+    "[Technical Fit +15 / 15] Can we verify that strong technical overlap (Webflow/Framer + backend, APIs, databases or React) plus documented, standardized development workflows? (rubric L196)",
+    "[Technical Fit +12 / 15] Can we verify that verified Webflow/Framer development combined with documented needs for backend architecture, custom APIs, external databases or bespoke React components? (rubric L195)",
+    "[Technical Fit +8 / 15] Can we verify that some overlap: standard Webflow or Framer builds with occasional external API requests? (rubric L194)",
+    "[Technical Fit +4 / 15] Can we verify that limited compatibility: visual-builder delivery (closed ecosystem, rare custom code)? (rubric L193)",
+    "[Decision-Maker Accessibility +10 / 10] Can we verify that verifiable warm introduction, prior direct relationship or confirmed prior positive interaction? (rubric L262)",
+    "[Decision-Maker Accessibility +8 / 10] Can we verify that direct personal route to the decision-maker (verified personal email or active LinkedIn/InMail channel)? (rubric L261)",
+    "[Decision-Maker Accessibility +6 / 10] Can we verify that valid company-level channel (official inquiry/partnership inbox or contact form)? (rubric L260)",
+    "[Decision-Maker Accessibility +3 / 10] Can we verify that relevant founder/executive identified by name and role, without a direct channel? (rubric L259)",
+    "[Customer Flow +20 / 20] Can we verify that verified active commercial pipeline (quarterly case studies, enterprise client roster, public hiring or client intake signals)? (rubric L97)",
+    "[Customer Flow +15 / 20] Can we verify that strong evidence of ongoing corporate/B2B customers and multiple projects (continuous stream of verified case studies or recognized brands)? (rubric L96)",
+    "[Customer Flow +15 / 20] Can we verify that ongoing corporate/B2B client work across multiple verifiable projects (continuous stream or recognized brands)? (rubric L96)",
+    "[Customer Flow +10 / 20] Can we verify that multiple identifiable real clients (rubric example: 3-5 verifiable commercial client case studies published within the last 12-18 months)? (rubric L95)",
+    "[Customer Flow +5 / 20] Can we verify that a few limited or weakly attributable client examples (rubric example: 1-2 projects)? (rubric L94)",
+    "[Development Demand +20 / 20] Can we verify that documented continuous demand for custom backend/logic work coupled with verifiable technical delivery bottlenecks or capacity constraints? (rubric L129)",
+    "[Development Demand +15 / 20] Can we verify that complex or repeated technical work (portals, dashboards, data sync, headless CMS, API middleware, platform migrations)? (rubric L128)",
+    "[Development Demand +10 / 20] Can we verify that projects involving third-party APIs, external databases, member authentication or custom JavaScript/React application logic? (rubric L127)",
+    "[Development Demand +5 / 20] Can we verify that occasional simple custom code (snippets, embed widgets, form webhooks, CSS overrides)? (rubric L126)",
+    "[Business Size +3.0 / 10] Can we verify that L225? (rubric very small micro-team (2-4 core people))",
+    "[Business Size +6.0 / 10] Can we verify that L226? (rubric small boutique studio (5-9 people))",
+    "[Business Size +8.0 / 10] Can we verify that L227? (rubric mid-sized studio inside the core sweet spot (10-24 people))",
+    "[Business Size +10.0 / 10] Can we verify that L228? (rubric established studio across the upper sweet spot (25-50 people))",
+    "[Commercial Fit +10 / 10] Can we verify that explicitly verified acceptance of a white-label/wholesale partnership model? (rubric L295)",
+    "[Commercial Fit +7 / 10] Can we verify that premium positioning plus explicit evidence of engaging external software developers/engineering contractors? (rubric L294)",
+    "[Commercial Fit +5 / 10] Can we verify that premium market positioning with documented premium budget indicators (e.g. $20k-$25k+ minimums or $100-$150+/hr rates)? (rubric L293)",
+    "[Commercial Fit +3 / 10] Can we verify that limited commercial signal: standard B2B billing (e.g. $5k-$10k minimums) without premium cushion? (rubric L292)"
+  ],
+  "discovery": {
+    "accepted": [
+      {
+        "discovered_at": "2026-11-13T20:37:36+00:00",
+        "discovery_source": "fixture",
+        "domain": "northwind.studio",
+        "name": "Northwind Studio",
+        "normalized_name": "northwindstudio",
+        "signals": {
+          "listing_region": "EU",
+          "webflow_partner": true
+        },
+        "source_name": "webflow_experts",
+        "source_url": "https://webflow.com/experts/northwind-studio",
+        "status": "pending_review"
+      }
+    ],
+    "conflicts": [],
+    "duplicates_in_batch": [
+      {
+        "domain": "northwind.studio",
+        "name": "Northwind Studio Limited",
+        "reason": "duplicate_in_batch"
+      }
+    ],
+    "existing_matches": [
+      {
+        "domain": "refokus.com",
+        "matched_company_id": "1afd5547-ce67-45d3-8aaa-35619514f835",
+        "name": "Refokus",
+        "reason": "exact_domain"
+      }
+    ],
+    "idempotency_key": "3bec0e3bfd3184f2f727ff437517f4793fb9cb9b9db24d1ba146dba31ec5298a",
+    "rejected": [
+      {
+        "name": "No Website Agency",
+        "reason": "unidentifiable: name and a valid domain are both required",
+        "source_url": "https://dribbble.com/no-website-agency"
+      }
+    ],
+    "source_name": "fixture",
+    "staged": 1,
+    "stats": {
+      "accepted": 1,
+      "conflicts": 0,
+      "duplicates_in_batch": 1,
+      "existing_matches": 1,
+      "raw": 4,
+      "rejected": 1,
+      "staged": 1
+    }
+  },
+  "evidence": [
+    {
+      "category": "client_roster",
+      "confidence": "high",
+      "evidence_excerpt": "Selected work for Meridian, Arqitel, BCG and Yahoo!.",
+      "evidence_url": "https://northwind.studio/work",
+      "finding_id": "ev-work",
+      "finding_type": "verified_fact",
+      "statement": "Northwind Studio publishes four commercial client case studies for named brands."
+    },
+    {
+      "category": "technology_stack",
+      "confidence": "high",
+      "evidence_url": "https://northwind.studio/about",
+      "finding_id": "ev-stack",
+      "finding_type": "verified_fact",
+      "statement": "The studio builds Webflow sites with custom JavaScript and external API integrations."
+    },
+    {
+      "category": "team_structure",
+      "confidence": "medium",
+      "evidence_url": "https://northwind.studio/team",
+      "finding_id": "ev-team",
+      "finding_type": "verified_fact",
+      "statement": "The team page lists 18 designers and engineers led by the founder."
+    },
+    {
+      "category": "business_model",
+      "confidence": "unverified",
+      "evidence_url": "",
+      "finding_id": "ev-gap",
+      "finding_type": "information_gap_tbd",
+      "statement": "No public evidence of post-launch support retainers or subcontracting policy."
+    }
+  ],
+  "persistence": "none \u2014 staging sink was a local JSONL outbox; nothing written to Supabase",
+  "scorecard": {
+    "company_name": "Northwind Studio",
+    "dimensions": [
+      {
+        "confidence": "high",
+        "evidence_refs": [
+          "ev-work"
+        ],
+        "gap_notes": [
+          "Anchor 10 not awarded: fewer than three verifiable commercial client case studies were supplied (rubric L95)."
+        ],
+        "key": "customer_flow",
+        "label": "Customer Flow",
+        "max_points": 20.0,
+        "points_awarded": 5.0,
+        "rationale": "Anchor 5 of 20 awarded (rubric L94): a few limited or weakly attributable client examples (rubric example: 1-2 projects). Supported by ev-work (verified_fact/high).",
+        "rubric_lines": "L62, L83-97; anchor L94",
+        "schema_column": "customer_flow_score"
+      },
+      {
+        "confidence": "high",
+        "evidence_refs": [
+          "ev-stack"
+        ],
+        "gap_notes": [
+          "Anchor 15 not awarded: no repeated or complex engineering work (portals, dashboards, data sync, migrations) was documented (rubric L128)."
+        ],
+        "key": "development_demand",
+        "label": "Development Demand",
+        "max_points": 20.0,
+        "points_awarded": 10.0,
+        "rationale": "Anchor 10 of 20 awarded (rubric L127): projects involving third-party APIs, external databases, member authentication or custom JavaScript/React application logic. Supported by ev-stack (verified_fact/high).",
+        "rubric_lines": "L63, L115-129; anchor L127",
+        "schema_column": "development_demand_score"
+      },
+      {
+        "confidence": "unverified",
+        "evidence_refs": [],
+        "gap_notes": [
+          "TBD: No public evidence of post-launch support retainers or subcontracting policy. (finding ev-gap) - information gap, never assumed (rubric L342-345).",
+          "Zero here means the parameter is unverified, not that the prospect was shown to lack it (rubric L357, L436-440).",
+          "Anchor 4 not awarded: no post-delivery support, warranty or maintenance evidence (rubric L158)."
+        ],
+        "key": "repeatability_orders",
+        "label": "Repeatability of Orders",
+        "max_points": 15.0,
+        "points_awarded": 0.0,
+        "rationale": "0 of 15 points (Zero-Evidence Rule, rubric L398-400): no verified finding satisfied any documented anchor for repeatability of orders (anchors: L64, L147-161).",
+        "rubric_lines": "L64, L147-161; zero-evidence rubric L398-400",
+        "schema_column": "repeatability_orders_score"
+      },
+      {
+        "confidence": "high",
+        "evidence_refs": [
+          "ev-stack"
+        ],
+        "gap_notes": [
+          "Anchor 12 not awarded: Webflow/Framer delivery combined with backend, API, database or React work was not documented (rubric L195)."
+        ],
+        "key": "technical_fit",
+        "label": "Technical Fit",
+        "max_points": 15.0,
+        "points_awarded": 8.0,
+        "rationale": "Anchor 8 of 15 awarded (rubric L194): some overlap: standard Webflow or Framer builds with occasional external API requests. Supported by ev-stack (verified_fact/high).",
+        "rubric_lines": "L65, L179-196; anchor L194",
+        "schema_column": "technical_fit_score"
+      },
+      {
+        "confidence": "unverified",
+        "evidence_refs": [],
+        "gap_notes": [
+          "Headcount is unresolved: unknown team size scores zero positive points (rubric L224, L239, L429-431).",
+          "Anchor 3 not awarded: no verifiable team size (rubric L225)."
+        ],
+        "key": "business_size",
+        "label": "Business Size",
+        "max_points": 10.0,
+        "points_awarded": 0.0,
+        "rationale": "0 of 10 points (Zero-Evidence Rule, rubric L398-400): team size and operational status are unverified; 'uncertain operations' can never be scored (rubric L239).",
+        "rubric_lines": "L66, L214-228; zero-evidence rubric L398-400",
+        "schema_column": "business_size_score"
+      },
+      {
+        "confidence": "medium",
+        "evidence_refs": [
+          "ev-team"
+        ],
+        "gap_notes": [
+          "Anchor 6 not awarded: no company-level contact channel was verified (rubric L260, L428)."
+        ],
+        "key": "decision_maker_accessibility",
+        "label": "Decision-Maker Accessibility",
+        "max_points": 10.0,
+        "points_awarded": 3.0,
+        "rationale": "Anchor 3 of 10 awarded (rubric L259): relevant founder/executive identified by name and role, without a direct channel. Supported by ev-team (verified_fact/medium).",
+        "rubric_lines": "L67, L248-262; anchor L259",
+        "schema_column": "decision_maker_accessibility_score"
+      },
+      {
+        "confidence": "unverified",
+        "evidence_refs": [],
+        "gap_notes": [
+          "TBD: No public evidence of post-launch support retainers or subcontracting policy. (finding ev-gap) - information gap, never assumed (rubric L342-345).",
+          "Zero here means the parameter is unverified, not that the prospect was shown to lack it (rubric L357, L436-440).",
+          "Anchor 3 not awarded: no commercial billing or pricing signal was verified (rubric L292)."
+        ],
+        "key": "commercial_fit",
+        "label": "Commercial Fit",
+        "max_points": 10.0,
+        "points_awarded": 0.0,
+        "rationale": "0 of 10 points (Zero-Evidence Rule, rubric L398-400): no verified finding satisfied any documented anchor for commercial fit (anchors: L68, L281-295).",
+        "rubric_lines": "L68, L281-295; zero-evidence rubric L398-400",
+        "schema_column": "commercial_fit_score"
+      }
+    ],
+    "disqualification_triggers": [],
+    "disqualified_by_score_only": true,
+    "evidence_coverage": 0.571,
+    "insufficient_evidence": false,
+    "missing_evidence": [
+      "TBD [business_model] No public evidence of post-launch support retainers or subcontracting policy. (finding ev-gap) - information_gap_tbd scores zero (rubric L342-345).",
+      "[repeatability_orders] 15 points unearned: Anchor 4 not awarded: no post-delivery support, warranty or maintenance evidence (rubric L158).",
+      "[business_size] 10 points unearned: Anchor 3 not awarded: no verifiable team size (rubric L225).",
+      "[commercial_fit] 10 points unearned: Anchor 3 not awarded: no commercial billing or pricing signal was verified (rubric L292)."
+    ],
+    "needs_human_review": true,
+    "overall_confidence": "medium",
+    "recommended_action": "Total below the 40-point viability threshold: retained as disqualified pending human review (rubric L542).",
+    "region": null,
+    "review_status": "draft",
+    "rubric_version": "2.0.1",
+    "segment": "digital_agency",
+    "tier": "disqualified",
+    "tier_label": "Disqualified",
+    "total_score": 26.0,
+    "verified_dimensions": 4,
+    "verified_fact_count": 3
+  }
+}

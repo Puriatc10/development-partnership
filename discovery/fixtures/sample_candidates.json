@@ -1,0 +1,45 @@
+{
+  "candidates": [
+    {
+      "name": "Northwind Studio",
+      "domain": "https://www.northwind.studio",
+      "source_name": "webflow_experts",
+      "source_url": "https://webflow.com/experts/northwind-studio",
+      "signals": { "webflow_partner": true, "listing_region": "EU" },
+      "evidence": [
+        {
+          "url": "https://northwind.studio/work",
+          "excerpt": "Selected work for Meridian, Arqitel, BCG and Yahoo! across four commercial client case studies.",
+          "provider": "crawl4ai"
+        },
+        {
+          "url": "https://northwind.studio/about",
+          "excerpt": "We build Webflow sites with custom JavaScript and external API integrations for marketing teams.",
+          "provider": "crawl4ai"
+        },
+        {
+          "url": "https://northwind.studio/team",
+          "excerpt": "A team of 18 designers and engineers, led by founder and managing partner.",
+          "provider": "crawl4ai"
+        }
+      ]
+    },
+    {
+      "name": "Northwind Studio Limited",
+      "domain": "northwind.studio/about",
+      "source_name": "clutch",
+      "source_url": "https://clutch.co/profile/northwind-studio"
+    },
+    {
+      "name": "No Website Agency",
+      "source_name": "dribbble",
+      "source_url": "https://dribbble.com/no-website-agency"
+    },
+    {
+      "name": "Refokus",
+      "domain": "refokus.com",
+      "source_name": "webflow_experts",
+      "source_url": "https://webflow.com/partners/refokus"
+    }
+  ]
+}

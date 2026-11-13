@@ -47,11 +47,14 @@ A work item is `COMPLETED` only with a verification artefact (test output, DB re
 
 | ID | Item | Owner | Status | Blocked by |
 |---|---|---|---|---|
-| W-3.1 | `discovery_candidates` migration (staging + provenance + status) | CRM Eng. | NOT_STARTED | — (authoring unblocked) |
+| W-3.1 | `discovery_candidates` migration (staging + provenance + status) | CRM Eng. | COMPLETED (authored) | `supabase/migrations/pending/20261113_discovery_candidates.sql`, unapplied |
 | W-3.2 | Apply migration to Development | CRM Eng. | BLOCKED | BLK-01 (no DDL credentials) |
-| W-3.3 | Discovery agent: normalize + dedupe + stage | Discovery Eng. | NOT_STARTED | W-3.2 for live path; file-outbox fallback designed |
-| W-3.4 | Human Gate 1 ingestion path (operator CLI) | CRM Eng. | NOT_STARTED | W-3.1 |
-| W-3.5 | Discovery identity + RLS (no INSERT on `companies`) | CRM Eng. | BLOCKED | BLK-04 |
+| W-3.3 | Discovery service: normalize + dedupe + stage | Discovery Eng. | COMPLETED (code) | `discovery/` — 28 tests; JSONL outbox sink for local exercise |
+| W-3.4 | Human Gate 1 ingestion path (operator CLI) | CRM Eng. | NOT_STARTED | W-3.2 |
+| W-3.5 | Discovery identity + RLS (no INSERT on `companies`) | CRM Eng. | AUTHORED | policies in the pending discovery migration; live check needs BLK-04 |
+| W-3.6 | Research briefs targeting IPP anchors | Intel Eng. | COMPLETED | `intelligence/briefs.py` — 29 questions across 7 dimensions |
+| W-3.7 | Discovery → Qualification bridge | Intel Eng. | COMPLETED (code) | `intelligence/bridge.py`; cycle evidence in `reports/eryndex/evidence/discovery-cycle-sample.json` |
+| W-3.8 | First controlled Discovery→Qualification cycle | Orchestrator | COMPLETED (offline) | `scripts/discovery_cycle.py`: 4 raw → 1 accepted, 1 duplicate, 1 existing match, 1 rejected |
 
 ## Phase 5 — Qualification intelligence
 
