@@ -5,13 +5,12 @@ Files here are **authored and reviewed but NOT applied** to any database.
 They live outside `supabase/migrations/` on purpose: a 14-digit version there is what a
 future `supabase db push` will pick up.
 
-> **Authority is the remote history, not the directory.** After Directive 03.3 the
-> hardening batch was staged for execution as
-> `supabase/migrations/20261114194622_hardening_batch1.sql` (sha256 `57f3b233…1246`,
-> byte-identical to the approved file). It is still **unapplied**: `supabase migration
-> list --remote` shows `20261114194622` local with no remote counterpart, and the
-> execution plan is `reports/eryndex/directive-03-3-migration-execution-plan.md`. Do not
-> read "the file is in migrations/" as "the migration ran".
+> **Authority is the remote history, not the directory.** The hardening batch was
+> **applied and verified** on 2026-11-14 as
+> `supabase/migrations/20261114194622_hardening_batch1.sql` (sha256 `57f3b233…1246`);
+> `supabase_migrations.schema_migrations` now lists `20261114194622`. Evidence:
+> `reports/eryndex/directive-03-4-migration-execution.md`. The discovery migration below
+> is still **unapplied**.
 
 ## How to apply (once BLK-01 clears)
 
