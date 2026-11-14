@@ -15,7 +15,11 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 DEPLOYED = REPO / "supabase" / "migrations" / "20261107174129_core_crm_schema.sql"
-PENDING = REPO / "supabase" / "migrations" / "pending" / "20261113_hardening_batch1.sql"
+# Staged for execution: a 14-digit version is what the CLI enumerates as a migration.
+# Its presence here is a *claim of intent*, not evidence of application — the remote
+# migration history (`supabase migration list --remote`) is the only authority.
+PENDING = REPO / "supabase" / "migrations" / "20261114194622_hardening_batch1.sql"
+DISCOVERY = REPO / "supabase" / "migrations" / "pending" / "20261113_discovery_candidates.sql"
 
 
 @pytest.fixture(scope="module")
@@ -23,10 +27,20 @@ def sql() -> str:
     return PENDING.read_text(encoding="utf-8")
 
 
-def test_pending_migration_exists_and_is_not_in_the_applied_directory():
-    assert PENDING.exists()
-    applied = list((REPO / "supabase" / "migrations").glob("*.sql"))
-    assert applied == [DEPLOYED], "only the deployed core schema may live in the applied directory"
+def test_hardening_migration_is_staged_with_a_valid_version():
+    """A 14-digit prefix is what the CLI enumerates; staging is not application.
+
+    `supabase migration list --remote` is the only authority on what is applied. This
+    test pins the shape the CLI requires and keeps the discovery file out of the push
+    path until it is approved separately.
+    """
+    assert PENDING.exists(), "the hardening migration must be staged for execution"
+    assert re.fullmatch(r"\d{14}_[a-z0-9_]+\.sql", PENDING.name), f"not a valid migration name: {PENDING.name}"
+    assert PENDING.name[:14] > "20261107174129", "a migration must sort after the one it follows"
+    assert DISCOVERY.exists(), "the discovery migration must remain separate, in pending/"
+    assert not (REPO / "supabase" / "migrations" / DISCOVERY.name).exists(), (
+        "discovery must not be staged in this increment"
+    )
 
 
 def test_migration_is_transactional(sql: str):
