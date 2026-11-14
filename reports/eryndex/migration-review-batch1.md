@@ -69,6 +69,20 @@ where not exists (
 
 ---
 
+## 4. Behaviour changes reviewed (not just permissions)
+
+A hardening batch must not quietly alter what the system records. Each behavioural delta was reviewed explicitly:
+
+| Object | Intended delta | Verdict |
+|---|---|---|
+| `fn_sync_company_suppression` → `suppression_registry.source` | early draft wrote `opt_out_request`; deployed schema writes `manual_blacklist` | **corrected.** A company row is suppressed by an operator decision, not an inbound opt-out. Re-labelling the audit ledger inside a permission fix would have silently rewritten history's meaning. Now preserves `manual_blacklist`, pinned by `tests/test_security_sql_static.py::test_h01_preserves_suppression_source_semantics`. |
+| `fn_sync_contact_suppression` → `source` | unchanged: `opt_out_request` | correct as deployed — a contact opt-out *is* an opt-out request. |
+| `agent_insert_outreach_messages` | adds qualification + lifecycle predicates | intentional; blocks drafting without an approved, non-disqualified qualification. May reject writes the current system allows — verified empty at Phase 0. |
+| `fn_enforce_agent_task_transitions` | narrows agent transitions | intentional; agents lose `in_progress → pending` and `in_progress → cancelled`, matching `task-execution-protocol.md`. |
+| `fn_sync_company_primary_domain` | conflict now raises instead of re-parenting | intentional; turning silent data corruption into a visible error is the point. |
+
+---
+
 ## Test plan (both migrations)
 
 | Layer | What runs | Status |

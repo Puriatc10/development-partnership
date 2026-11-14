@@ -23,3 +23,4 @@ claim history that never happened, and would make the migration list lie.
 | File | Fixes | Risk |
 |---|---|---|
 | `20261113_hardening_batch1.sql` | suppression write path (H-01), agent task transitions (H-02), outreach qualification precondition (H-03), duplicate approved scorecard (H-04), domain re-parenting (H-05) | Low: additive functions/triggers, two policy/index replacements, no data rewrite. H-03 will reject drafts the current system would have allowed — verify no such rows exist first. |
+| `20261113_discovery_candidates.sql` | Workflow 1 staging: `discovery_candidates` + `discovery_candidate_evidence` + `discovery_candidate_status`, with agent staging limited to own `pending_review` rows and operators owning Human Gate 1 | Low: additive only (two new tables, one new type, indexes, policies). No existing object is altered. Depends on `companies(id)` and the existing helper functions; no ordering constraint against the hardening batch. |

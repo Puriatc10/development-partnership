@@ -76,7 +76,11 @@ BEGIN
                 target_type, identifier, reason, source, created_by_actor_type, created_by_actor_identity
             ) VALUES (
                 'domain', LOWER(TRIM(NEW.primary_domain)), COALESCE(NEW.suppression_reason, 'Company suppression'),
-                'opt_out_request', 'system', 'trg_companies_suppression_sync'
+                -- Preserve the deployed semantic exactly: a company row is suppressed by
+                -- an operator decision (manual_blacklist), not by an inbound opt-out
+                -- request. This batch repairs the permission failure; it must not also
+                -- change what the audit ledger records. See migration-review-batch1.md §4.
+                'manual_blacklist', 'system', 'trg_companies_suppression_sync'
             ) ON CONFLICT (identifier) DO NOTHING;
         END IF;
     END IF;

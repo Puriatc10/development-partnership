@@ -77,6 +77,26 @@ def test_h05_domain_reparenting_raises_instead_of_moving(sql: str):
     assert "SET company_id = EXCLUDED.company_id" not in block
 
 
+def test_h01_preserves_suppression_source_semantics(sql: str):
+    """A permission fix must not quietly change what the audit ledger records.
+
+    The deployed company trigger writes 'manual_blacklist'; an early draft of this
+    batch wrote 'opt_out_request', which would have re-labelled every operator
+    suppression as an inbound opt-out. Contact suppression legitimately means
+    opt-out and must keep that value.
+    """
+    company_block = sql.split("FUNCTION fn_sync_company_suppression()", 1)[1].split("$$ LANGUAGE", 1)[0]
+    assert "'manual_blacklist'" in company_block
+    assert "'opt_out_request'" not in company_block
+
+    contact_block = sql.split("FUNCTION fn_sync_contact_suppression()", 1)[1].split("$$ LANGUAGE", 1)[0]
+    assert "'opt_out_request'" in contact_block
+
+    deployed = DEPLOYED.read_text(encoding="utf-8")
+    deployed_company = deployed.split("FUNCTION fn_sync_company_suppression()", 1)[1].split("$$ LANGUAGE", 1)[0]
+    assert "'manual_blacklist'" in deployed_company, "deployed semantic changed; re-verify the migration's intent"
+
+
 def test_migration_does_not_drop_or_rewrite_business_data(sql: str):
     lowered = sql.lower()
     for forbidden in ("delete from", "truncate", "drop table", "drop column", "update companies", "update contacts"):
