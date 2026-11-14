@@ -372,7 +372,14 @@ challenge, `auth.docker.io/token` returns 200, `hub.docker.com` lists `0.9.5`, a
 downloads. No mirror/proxy is required. Adapter fails closed: `TransportUnavailable` →
 `ProviderError("unavailable", retryable=True)`, 0 retries.
 
-**Adapter defects (latent — fix before trusting a green run):** `adapter.py:88-94` reads `markdown` as str, but
+**Adapter defects — FIXED in Directive 03.5** (`reports/eryndex/directive-03-5-crawl4ai-adapter-correction.md`,
+commit on 2026-11-14): `markdown` is now normalized out of the nested dict before it becomes an excerpt or a
+hash input; `cache_mode` is sent lowercase inside the typed `{type, params}` envelope; `extract` modes are mapped
+onto allowlisted `CrawlerRunConfig` fields instead of being validated and dropped; `browser_config` is forwarded
+through a 17-field allowlist; and `provider_result_id` is explicitly `None` because v0.9.5 issues no id. The
+paragraph below is kept as the record of what was wrong:
+
+**Original defect list (fixed above):** `adapter.py:88-94` reads `markdown` as str, but
 v0.9.5 `model_dump()` (`crawl4ai/models.py:281`) emits a nested dict → `Evidence.excerpt` becomes a dict repr and
 `content_hash` hashes it; `adapter.py:70` sends uppercase `cache_mode` vs lowercase `CacheMode` values
 (`cache_context.py:16-20`) through the untrusted gate (`deploy/docker/api.py:771`); `adapter.py:57-63` validates
