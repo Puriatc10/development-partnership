@@ -354,3 +354,33 @@ detail, and `llms.txt` states the legacy v1 API (sessions, scan, site, enrich, c
   running separate processes/containers.
 - All three avoid direct CRM DB writes if used through their HTTP surfaces — pass this as a hard rule to
   the adapters (no `psycopg` against the `postgres` container, no `my-docs`/`outputs` file spelunking).
+
+## Crawl4AI live verification (2026-11-14)
+
+Result: **not verified** — `failure_class=docker`. Evidence `reports/eryndex/evidence/crawl4ai-live-verification.json`,
+analysis `reports/eryndex/crawl4ai-blocker-analysis.md`. No container started; TCP 127.0.0.1:11235 refused;
+`endpoint_verified` stays `False`. **Not proven:** `/health` 200, `POST /crawl` shape and field types, latency,
+the `0.9.5` tag itself.
+
+**Proven:** the daemon's network subsystem is wedged — `docker network create` (metadata only),
+`docker network ls` and `docker network inspect bridge` all hang to timeout while container/image
+reads answer; dockerd repeats `error creating temporary lease: context canceled` 6x today.
+Disk was **not** a factor (21.18 GiB before, 20.92 GiB after, drift ≈250 MB).
+**Retracted (re-measured by an independent audit):** an earlier version of this note claimed Docker
+Hub returned 403. It does not — `registry-1.docker.io/v2/` returns the normal `401` + Bearer
+challenge, `auth.docker.io/token` returns 200, `hub.docker.com` lists `0.9.5`, and the PyPI wheel
+downloads. No mirror/proxy is required. Adapter fails closed: `TransportUnavailable` →
+`ProviderError("unavailable", retryable=True)`, 0 retries.
+
+**Adapter defects (latent — fix before trusting a green run):** `adapter.py:88-94` reads `markdown` as str, but
+v0.9.5 `model_dump()` (`crawl4ai/models.py:281`) emits a nested dict → `Evidence.excerpt` becomes a dict repr and
+`content_hash` hashes it; `adapter.py:70` sends uppercase `cache_mode` vs lowercase `CacheMode` values
+(`cache_context.py:16-20`) through the untrusted gate (`deploy/docker/api.py:771`); `adapter.py:57-63` validates
+`extract` then never sends it; `contracts/provider.py:41-70` has no provider-issued id field, so rows key on
+`url + content_hash + retrieved_at`.
+
+**Requirement / reproduction:** `timeout 45 docker network create c4a-probe` hangs (exit 124) while
+`docker network ls` also hangs — that pair is the wedge. The registry is *not* blocked: expect `401` from
+`registry-1.docker.io/v2/`, `200` from `auth.docker.io/token`. Needs ≥20 GiB free with a 5 GiB abort floor
+(15 s watchdog), `timeout` on all docker calls, VM RAM ≥4 GiB (`memoryMiB=2048`), and the 15 GiB
+`wsl/data/ext4.vhdx` compacted. Owner: restart Docker Desktop (bounces `trading_bot_postgres`). No mirror needed.

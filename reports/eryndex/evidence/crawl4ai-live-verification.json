@@ -1,0 +1,118 @@
+{
+  "timestamp_utc": "2026-11-14T10:16:35Z",
+  "completed_at_utc": "2026-11-14T10:55:15Z",
+  "directive": "Directive 03.1 §3 — Crawl4AI live verification",
+  "verdict": "failed",
+  "failure_class": "docker",
+  "image": "unclecode/crawl4ai:0.9.5",
+  "image_digest": "not_pulled",
+  "container_id": "not_created",
+  "docker_command": "docker run -d --name eryndex-crawl4ai-test --rm --shm-size=1g -p 127.0.0.1:11235:11235 unclecode/crawl4ai:0.9.5",
+  "docker_command_executed": false,
+  "endpoint": "http://127.0.0.1:11235/crawl",
+  "test_url": "https://example.com/",
+  "request": {
+    "capability": "crawl",
+    "payload": {
+      "urls": [
+        "https://example.com/"
+      ],
+      "extract": [
+        "text"
+      ],
+      "max_pages": 1
+    },
+    "idempotency_key": "eryndex-live-verify-2026-11-14",
+    "trace_id": "crawl4ai-live-verification",
+    "timeout_s": 60.0,
+    "max_retries": 0,
+    "body_as_sent": {
+      "urls": [
+        "https://example.com/"
+      ],
+      "crawler_config": {
+        "cache_mode": "ENABLED"
+      }
+    }
+  },
+  "http_status": null,
+  "duration_ms": 2016,
+  "session_duration_ms": 2320857,
+  "provider_response_id": null,
+  "content_chars": 0,
+  "content_head": "",
+  "normalized_evidence_row": null,
+  "adapter_module": "integrations/crawl4ai/adapter.py",
+  "adapter_class": "Crawl4AIProvider",
+  "adapter_version_declared": "0.9.5",
+  "endpoint_verified_flag": false,
+  "python_version": "3.12.4",
+  "python_executable": "C:/Users/puria/Desktop/code-workspace/projects/development-partnership/.venv/Scripts/python.exe",
+  "disk_free_gb_before": 21.18,
+  "disk_free_gb_min": 20.92,
+  "disk_free_gb_after": 20.92,
+  "disk_units_note": "GiB from df -B1. df -h /c reported '22G avail, 96% used' at session start and in all 81 watchdog samples (10:29:59-10:50:17Z, zero variance). Final reading after artifact writes and signal/watchdog cleanup: 20.92 GiB - a ~250 MB host-side drift, not image bytes (no pull completed, no layers written, no crawl4ai/hello-world image exists on the daemon).",
+  "notes": [
+    "A started container or a /health 200 was never reached, so this is NOT a verification. It is a classified failure with a proven cause.",
+    "PRIMARY BLOCKER (failure_class=docker): the Docker daemon's mutating API is wedged. Every write-path call hangs indefinitely, while read-only calls (info/ps/images/events) answer normally.",
+    "  Evidence: 'docker network create eryndex-c4a-probe-net' -> exit 124 at 45s (a pure boltdb write; no registry, no image layer, no snapshot involved). 'docker create --network none alpine:latest true' -> exit 124 at 45s. 'docker run --rm --network none alpine:latest echo' -> exit 124 at 60s. No container-create event ever appears in 'docker events'.",
+    "  Evidence: 'docker pull hello-world' -> exit 124 at 120s after printing only 'Using default tag: latest'. Daemon log (log/vm/dockerd.log) shows 'Handler for POST /v1.44/images/create returned error: error creating temporary lease: context canceled' repeated 6x today: 07:42:58, 07:43:05, 07:54:03, 08:13:06, 08:41:43, 10:21:07 (the last is this run).",
+    "SECONDARY BLOCKER (network, independently fatal for the pull): Docker Hub is Cloudflare-403 from this network. registry-1.docker.io/v2/ -> HTTP 403 'RBAC: access denied'; auth.docker.io/token -> HTTP 403 (Server: cloudflare); hub.docker.com/v2/repositories/unclecode/crawl4ai/tags/ -> HTTP 403. Consequence: the 0.9.5 tag and manifest size could not be confirmed, and no image bytes are obtainable even with a healthy daemon. files.pythonhosted.org also fails DNS (pip download crawl4ai==0.9.5 -> getaddrinfo failed), so the PyPI wheel could not be used either; pypi.org JSON itself resolved and reports 0.9.5 as the current release.",
+    "NOT the cause: disk. 21.18 GiB free before; 21.17 GiB floor across 81 watchdog samples at 15s intervals (10:29:59Z-10:50:17Z, zero variance, all '22G / 96%'); 20.92 GiB final after cleanup (~250 MB host drift). The pull never allocated a byte. This is a capacity-free failure, unlike the two prior attempts.",
+    "NOT the cause: provider or adapter. The adapter behaved correctly for a dead endpoint: TransportUnavailable -> ProviderError('unavailable'), retryable=True, one call, zero retries (max_retries=0). No adapter defect caused this failure. Separate defects found by source review are listed below and are latent, not causal.",
+    "Docker environment measured: Docker Desktop 25.0.3, driver overlay2, root /var/lib/docker, kernel 5.15.146.1-microsoft-standard-WSL2, 16 CPU, 8 GiB VM RAM, cgroup v1. Settings: diskSizeMiB=65536 (64 GiB data disk), memoryMiB=2048 (the VM is configured for only 2 GiB RAM), swapMiB=1024, useContainerdSnapshotter=false, diskTRIM=true.",
+    "WSL data disk: C:/Users/puria/AppData/Local/Docker/wsl/data/ext4.vhdx = 15 GiB on a 476 GiB host volume that is 96% full. It has never been compacted, so 15 GiB of that vhdx is dead weight against the 21 GiB free.",
+    "'docker system df' hung again (exit 124 at 90s) — consistent with earlier reports on this machine and another symptom of the same wedged daemon.",
+    "Owner container respected: trading_bot_postgres (postgres:16-alpine, port 5432) was 'Up 15 hours (unhealthy)' at 10:16Z and identically 'Up 15 hours' at 10:41Z — same uptime proves it was never stopped or restarted. It is flagged unhealthy by its own pg_isready healthcheck; that predates this run and is not mine to fix.",
+    "Cleanup: nothing to clean. Zero images pulled (verified: image list unchanged, no crawl4ai or hello-world entry), zero containers created (verified: 'docker ps -a' shows only the 3 pre-existing owner containers), zero probe networks created. No prune, no rmi against owner images, no wsl --shutdown.",
+    "Owner action required to unblock: (1) restart Docker Desktop — this WILL restart trading_bot_postgres because the daemon owns it, so it needs the owner's consent and a maintenance window, not an agent decision; (2) obtain Docker Hub access (a registry mirror or a proxy) because this network is 403'd by Docker Hub; (3) raise the VM to >=4 GiB RAM before running Chromium; (4) compact the WSL vhdx and free host disk to a >=20 GiB working margin before the ~2-4 GB pull."
+  ],
+  "adapter_defects": [
+    "integrations/crawl4ai/adapter.py:88-94 — normalization bug (high severity, latent until a live server exists). v0.9.5 serializes CrawlResult with model_dump(), and CrawlResult.model_dump() at crawl4ai/models.py:281 sets result['markdown'] = self._markdown.model_dump(), i.e. a NESTED DICT {raw_markdown, markdown_with_citations, references_markdown, fit_markdown, fit_html}. The adapter takes item.get('markdown') as if it were a string, so text becomes a dict: e.g. it truthily passes 'if not text', reports status 'ok', and writes Evidence.excerpt = str(dict)[:600] — a Python dict repr, not prose — with content_hash = sha256 of that repr. Digestible corruption of every citation-grade row, silently.",
+    "integrations/crawl4ai/adapter.py:70 — crawler_config shape/value mismatch. CacheMode is a plain Enum whose values are lowercase (crawl4ai/cache_context.py:16-20: ENABLED='enabled', BYPASS='bypass'), and v0.9.5 parses crawler_config through CrawlerRunConfig.load(..., provenance=UNTRUSTED) (deploy/docker/api.py:771) which expects the serialized {type:..., params:{...}} form. The adapter sends a bare uppercase string 'ENABLED'/'BYPASS', which can never equal CacheMode.BYPASS, so cache bypass is at best a silent no-op. Whether the untrusted gate 400s instead is unverified (no server could be started).",
+    "integrations/crawl4ai/adapter.py:57-63 vs 68-71 — 'extract' is validated then silently discarded. validate() accepts extract in {'text','links','metadata'}, but _call() never puts any extraction setting in the request body. Confirmed from the wire capture in this run: the body sent was exactly {urls, crawler_config:{cache_mode}}, no extract. A caller asking for links gets text and no warning.",
+    "integrations/crawl4ai/adapter.py:5 — the module docstring documents browser_config as part of the verified surface ({urls, browser_config, crawler_config}), but _call() never sends browser_config; there is no way to set a page timeout, user agent, or viewport through the adapter.",
+    "contracts/provider.py:41-70 — the Evidence dataclass has no field for a provider-issued identifier (id/request_id/trace). v0.9.5's CrawlResult exposes no per-page id either, so citation-grade rows can only be keyed by url + content_hash + retrieved_at. If a citation-grade row must carry a provider-issued id, the adapter cannot supply one today and the contract cannot store one — this is an explicit gap, not an assumption."
+  ],
+  "upstream_facts_verified_without_docker": {
+    "method": "PyPI JSON (0.9.5 is the current release) + raw.githubusercontent.com at tag v0.9.5; the PyPI wheel itself was unreachable (files.pythonhosted.org DNS failure) and Docker Hub is 403.",
+    "response_envelope": "deploy/docker/api.py:898-900 -> {'success': True, 'results': processed_results}, each item built by result.model_dump() at api.py:865. The adapter's _as_items(raw, ('results','data','pages')) matches 'results' correctly.",
+    "markdown_type": "crawl4ai/models.py:281 -> nested dict, see defect 1.",
+    "cache_mode_values": "crawl4ai/cache_context.py:16-20 -> lowercase.",
+    "crawl_config_parser": "crawl4ai/async_configs.py:2354 CrawlerRunConfig.load -> from_serializable_dict(...) then _enforce_untrusted (async_configs.py:546)."
+  },
+  "raw_response_path": "reports/eryndex/evidence/crawl4ai-live-response.json",
+  "watchdog_log_path": "reports/eryndex/evidence/crawl4ai-disk-watchdog.log",
+  "watchdog_samples": 81,
+  "watchdog_interval_s": 15,
+  "watchdog_window_utc": "2026-11-14T10:29:59Z .. 2026-11-14T10:50:17Z",
+  "owner_data_touched": false,
+  "images_pulled": [],
+  "containers_created": [],
+  "corrections": [
+    {
+      "applied_at_utc": "2026-11-14T11:41:31+00:00",
+      "by": "independent QA re-measurement (Directive 03.1 Agent 4)",
+      "retracted_claims": [
+        "registry-1.docker.io/v2/ returned HTTP 403 'RBAC: access denied'",
+        "auth.docker.io/token returned HTTP 403 (cloudflare)",
+        "hub.docker.com tags API returned HTTP 403",
+        "files.pythonhosted.org failed DNS (PyPI wheel unreachable)",
+        "disk stayed at 21.18 GiB with ~0 bytes consumed"
+      ],
+      "measured_instead": {
+        "registry-1.docker.io/v2/": "401 Unauthorized with WWW-Authenticate: Bearer (normal anonymous challenge)",
+        "auth.docker.io/token": "200 with a pull token",
+        "hub.docker.com/v2/repositories/unclecode/crawl4ai/tags/": "200, 40 tags, 0.9.5 present",
+        "files.pythonhosted.org wheel": "200, 494036 bytes",
+        "disk_free_gb_after": "20.92 (drift ~250 MB, not zero)"
+      },
+      "standing_conclusions": [
+        "failure_class=docker stands: the daemon's network subsystem hangs on both read and write (docker network ls / inspect / create all exit 124)",
+        "no image was pulled and no crawl was executed, so the provider remains unverified",
+        "no mirror or registry proxy is required"
+      ],
+      "note": "Original observations are preserved above for provenance. A correction block is appended rather than rewriting the observed text, so the record shows what was claimed and what was later measured."
+    }
+  ]
+}
