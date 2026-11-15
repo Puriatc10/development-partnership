@@ -38,7 +38,7 @@ from discovery.service import (
 )
 
 REPO = Path(__file__).resolve().parent.parent
-MIGRATION = REPO / "supabase" / "migrations" / "pending" / "20261113_discovery_candidates.sql"
+MIGRATION = REPO / "supabase" / "migrations" / "20261115212728_discovery_candidates.sql"
 ACTOR = "hermes-discovery-v1"
 BATCH_CONSTRAINT = "uq_discovery_candidates_batch_domain"
 DOMAIN_CONSTRAINT = "uq_discovery_candidates_pending_domain"

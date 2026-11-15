@@ -15,11 +15,12 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 DEPLOYED = REPO / "supabase" / "migrations" / "20261107174129_core_crm_schema.sql"
-# Staged for execution: a 14-digit version is what the CLI enumerates as a migration.
-# Its presence here is a *claim of intent*, not evidence of application — the remote
-# migration history (`supabase migration list --remote`) is the only authority.
+# Applied: a 14-digit version is what the CLI enumerates as a migration. Presence here
+# is a *claim of application*; the remote history (`supabase migration list --remote`)
+# is the only authority, and a file must not sit here before it is applied.
 PENDING = REPO / "supabase" / "migrations" / "20261114194622_hardening_batch1.sql"
-DISCOVERY = REPO / "supabase" / "migrations" / "pending" / "20261113_discovery_candidates.sql"
+DISCOVERY = REPO / "supabase" / "migrations" / "20261115212728_discovery_candidates.sql"
+PENDING_DIR = REPO / "supabase" / "migrations" / "pending"
 
 
 @pytest.fixture(scope="module")
@@ -27,20 +28,18 @@ def sql() -> str:
     return PENDING.read_text(encoding="utf-8")
 
 
-def test_hardening_migration_is_staged_with_a_valid_version():
-    """A 14-digit prefix is what the CLI enumerates; staging is not application.
+def test_applied_migrations_are_staged_with_valid_versions():
+    """A 14-digit prefix is what the CLI enumerates; `migration list --remote` decides.
 
-    `supabase migration list --remote` is the only authority on what is applied. This
-    test pins the shape the CLI requires and keeps the discovery file out of the push
-    path until it is approved separately.
+    Both migrations have been applied and verified in Development, so both files live in
+    `supabase/migrations/` with versions that sort after the schema they follow, and
+    nothing is left in `pending/` where a future `db push` could pick it up.
     """
-    assert PENDING.exists(), "the hardening migration must be staged for execution"
-    assert re.fullmatch(r"\d{14}_[a-z0-9_]+\.sql", PENDING.name), f"not a valid migration name: {PENDING.name}"
-    assert PENDING.name[:14] > "20261107174129", "a migration must sort after the one it follows"
-    assert DISCOVERY.exists(), "the discovery migration must remain separate, in pending/"
-    assert not (REPO / "supabase" / "migrations" / DISCOVERY.name).exists(), (
-        "discovery must not be staged in this increment"
-    )
+    for path, after in ((PENDING, "20261107174129"), (DISCOVERY, "20261114194622")):
+        assert path.exists(), f"applied migration is missing: {path.name}"
+        assert re.fullmatch(r"\d{14}_[a-z0-9_]+\.sql", path.name), f"not a valid migration name: {path.name}"
+        assert path.name[:14] > after, "a migration must sort after the one it follows"
+    assert not list(PENDING_DIR.glob("*.sql")), "an applied migration must not remain in pending/"
 
 
 def test_migration_is_transactional(sql: str):
