@@ -20,7 +20,20 @@ from discovery.identity import (
     resolve_identity,
 )
 from discovery.ports import JsonlOutboxSink, StagingUnavailable, SupabaseCandidateSink
-from discovery.service import DiscoveryRequest, DiscoveryRequestError, run_discovery
+from discovery.service import (
+    DiscoveryRequest,
+    DiscoveryRequestError,
+    run_discovery as _run_discovery,
+)
+
+#: The trusted execution identity every test stages as. Directive 03.6 made
+#: ``actor`` mandatory so a candidate can never claim an identity from provider data.
+ACTOR = "hermes-discovery-v1"
+
+
+def run_discovery(request, source, sink, **kwargs):
+    """Test shim: supply the execution identity the runner would pass in production."""
+    return _run_discovery(request, source, sink, actor=kwargs.pop("actor", ACTOR), **kwargs)
 
 
 class ListSource:

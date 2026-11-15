@@ -80,6 +80,13 @@ CREATE TABLE discovery_candidate_evidence (
 
 CREATE INDEX idx_discovery_candidate_evidence_candidate ON discovery_candidate_evidence (candidate_id);
 
+-- Evidence retries must not duplicate a citation. Staging is two-stage — candidates
+-- first, then their evidence — so a run whose evidence write fails is retried; this
+-- pair makes the retry insert exactly the rows that are missing instead of doubling
+-- them. Added in Directive 03.6 together with the id-verified evidence association.
+CREATE UNIQUE INDEX uq_discovery_candidate_evidence_url
+    ON discovery_candidate_evidence (candidate_id, url);
+
 CREATE TRIGGER trg_discovery_candidates_updated_at
     BEFORE UPDATE ON discovery_candidates
     FOR EACH ROW

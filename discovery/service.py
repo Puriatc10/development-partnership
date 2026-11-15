@@ -6,6 +6,7 @@ domain, and never resolves a domain conflict by itself.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
@@ -22,7 +23,7 @@ from .identity import (
     normalize_name,
     resolve_identity,
 )
-from .ports import CandidateSink, CandidateSource, candidate_evidence_rows
+from .ports import AlreadyStaged, CandidateSink, CandidateSource, candidate_evidence_rows
 
 APPROVED_SOURCES = frozenset(
     {
@@ -39,6 +40,21 @@ APPROVED_SOURCES = frozenset(
 
 class DiscoveryRequestError(ValueError):
     """The directive is not executable as given."""
+
+
+class DiscoveryIdentityError(RuntimeError):
+    """No trusted execution identity was supplied.
+
+    ``discovered_by_agent_identity`` is a claim about *who staged this row*, and
+    the pending migration's RLS policy compares it to the JWT. It therefore comes
+    from the execution context, never from a discovery provider's payload, and a
+    blank identity is a hard failure rather than a default.
+    """
+
+
+#: Agent identity shape: lower-case, starts alphanumeric, no spaces. Deliberately
+#: strict — this value is compared to ``current_agent_identity()`` in the policy.
+ACTOR_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._:-]{2,63}$")
 
 
 @dataclass(frozen=True)
@@ -74,9 +90,11 @@ class DiscoveryOutcome:
     existing_matches: tuple[dict[str, Any], ...]
     conflicts: tuple[dict[str, Any], ...]
     rejected: tuple[dict[str, Any], ...]
+    already_staged: tuple[dict[str, Any], ...]
     staged: int
     idempotency_key: str
     source_name: str
+    actor: str
     stats: Mapping[str, int] = field(default_factory=dict)
 
     @property
@@ -90,9 +108,11 @@ class DiscoveryOutcome:
             "existing_matches": list(self.existing_matches),
             "conflicts": list(self.conflicts),
             "rejected": list(self.rejected),
+            "already_staged": list(self.already_staged),
             "staged": self.staged,
             "idempotency_key": self.idempotency_key,
             "source_name": self.source_name,
+            "actor": self.actor,
             "stats": dict(self.stats),
         }
 
@@ -121,19 +141,51 @@ def _coerce(candidate: Mapping[str, Any], source_name: str, discovered_at: str) 
     )
 
 
+def compute_batch_key(request: DiscoveryRequest, accepted: Sequence[Mapping[str, Any]]) -> str:
+    """Deterministic key for this directive's candidate set.
+
+    Sorted domains make it independent of provider order; campaign and source are
+    included so the same domain discovered by a different campaign is a different
+    batch (the partial unique index on pending domains still prevents a duplicate
+    *row*). Computed before the write and stored on each row, so the database's
+    ``(batch_key, domain)`` uniqueness turns a retry into a conflict rather than a
+    second candidate.
+    """
+    return content_key(
+        {
+            "campaign_id": request.campaign_id,
+            "sources": sorted(set(request.sources)),
+            "domains": sorted({str(row["domain"]) for row in accepted}),
+        }
+    )
+
+
 def run_discovery(
     request: DiscoveryRequest,
     source: CandidateSource,
     sink: CandidateSink,
     *,
+    actor: str,
     existing_companies: Sequence[Mapping[str, Any]] = (),
     now: str | None = None,
 ) -> DiscoveryOutcome:
     """Execute one discovery directive against one source.
 
+    ``actor`` is the trusted execution identity that will be written to
+    ``discovered_by_agent_identity``; it must come from the runtime, never from a
+    provider payload, and it is validated here rather than defaulted.
+
     ``existing_companies`` is the read-side truth (id, name, primary_domain) and
     is supplied by the caller so this function stays pure and testable.
     """
+    if not isinstance(actor, str) or not ACTOR_PATTERN.match(actor):
+        raise DiscoveryIdentityError(
+            "run_discovery requires a trusted execution identity in 'actor' "
+            f"(got {actor!r}); expected {ACTOR_PATTERN.pattern}. "
+            "The staging policy compares this value to the JWT identity, so it cannot be "
+            "inferred or defaulted — pass the identity the runner authenticated as."
+        )
+
     discovered_at = now or _now()
     excluded = {normalize_domain(d) for d in request.exclude_domains if normalize_domain(d)}
 
@@ -190,15 +242,35 @@ def run_discovery(
             continue
 
         row = identity.to_row()
-        row["discovery_source"] = source.name
         row["source_url"] = identity.source_url
         accepted.append(row)
         seen_domains.add(identity.domain)
         seen_names.add(identity.normalized_name)
         evidence.extend(candidate_evidence_rows({**item, "domain": identity.domain, "discovered_at": discovered_at}))
 
-    staged = sink.write(request, accepted, evidence)
-    key = content_key({"accepted": sorted(c["domain"] for c in accepted), "campaign_id": request.campaign_id})
+    # The batch key is computed *before* persistence and carried on every row, so a
+    # retry collides on (batch_key, domain) instead of inserting a second copy.
+    batch_key = compute_batch_key(request, accepted)
+    for row in accepted:
+        row["batch_key"] = batch_key
+        row["discovered_by_agent_identity"] = actor
+
+    already_staged: list[dict[str, Any]] = []
+    try:
+        staged = sink.write(request, accepted, evidence)
+    except AlreadyStaged as exc:
+        # A unique violation is not a staged row: report it as its own outcome.
+        already_staged = [
+            {
+                "name": row["name"],
+                "domain": row["domain"],
+                "reason": "already_staged",
+                "constraint": exc.constraint,
+                "same_batch": exc.same_batch,
+            }
+            for row in accepted
+        ]
+        staged = 0
 
     stats = {
         "raw": len(raw),
@@ -207,6 +279,7 @@ def run_discovery(
         "existing_matches": len(matches),
         "conflicts": len(conflicts),
         "rejected": len(rejected),
+        "already_staged": len(already_staged),
         "staged": staged,
     }
     return DiscoveryOutcome(
@@ -215,8 +288,10 @@ def run_discovery(
         existing_matches=tuple(matches),
         conflicts=tuple(conflicts),
         rejected=tuple(rejected),
+        already_staged=tuple(already_staged),
         staged=staged,
-        idempotency_key=key,
+        idempotency_key=batch_key,
         source_name=source.name,
+        actor=actor,
         stats=stats,
     )

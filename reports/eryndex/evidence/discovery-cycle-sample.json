@@ -318,8 +318,9 @@
   "discovery": {
     "accepted": [
       {
-        "discovered_at": "2026-11-13T20:37:36+00:00",
-        "discovery_source": "fixture",
+        "batch_key": "6542171e50e0015af503f20e4c7aa56bbcff1eda2a981f138c3a8b2db2ae5915",
+        "discovered_at": "2026-11-15T19:27:57+00:00",
+        "discovered_by_agent_identity": "hermes-discovery-v1",
         "domain": "northwind.studio",
         "name": "Northwind Studio",
         "normalized_name": "northwindstudio",
@@ -332,6 +333,8 @@
         "status": "pending_review"
       }
     ],
+    "actor": "hermes-discovery-v1",
+    "already_staged": [],
     "conflicts": [],
     "duplicates_in_batch": [
       {
@@ -348,7 +351,7 @@
         "reason": "exact_domain"
       }
     ],
-    "idempotency_key": "3bec0e3bfd3184f2f727ff437517f4793fb9cb9b9db24d1ba146dba31ec5298a",
+    "idempotency_key": "6542171e50e0015af503f20e4c7aa56bbcff1eda2a981f138c3a8b2db2ae5915",
     "rejected": [
       {
         "name": "No Website Agency",
@@ -360,6 +363,7 @@
     "staged": 1,
     "stats": {
       "accepted": 1,
+      "already_staged": 0,
       "conflicts": 0,
       "duplicates_in_batch": 1,
       "existing_matches": 1,

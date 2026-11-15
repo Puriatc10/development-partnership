@@ -87,7 +87,13 @@ def main() -> int:
     )
     source = JsonFileSource(REPO / "discovery" / "fixtures" / "sample_candidates.json", name="fixture")
     outbox = REPO / "backups" / "discovery-outbox.jsonl"
-    outcome = run_discovery(request, source, JsonlOutboxSink(outbox), existing_companies=EXISTING_COMPANIES)
+    outcome = run_discovery(
+        request,
+        source,
+        JsonlOutboxSink(outbox),
+        actor="hermes-discovery-v1",
+        existing_companies=EXISTING_COMPANIES,
+    )
 
     print("== discovery ==")
     for key, value in outcome.stats.items():

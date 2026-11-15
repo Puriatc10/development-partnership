@@ -14,20 +14,54 @@ from .identity import (
     normalize_name,
     resolve_identity,
 )
-from .ports import CandidateSink, CandidateSource, JsonFileSource, JsonlOutboxSink, StagingUnavailable
-from .service import DiscoveryOutcome, DiscoveryRequest, run_discovery
+from .ports import (
+    CANDIDATE_COLUMNS,
+    EVIDENCE_COLUMNS,
+    AlreadyStaged,
+    CandidateSink,
+    CandidateSource,
+    EvidencePersistenceError,
+    JsonFileSource,
+    JsonlOutboxSink,
+    StagingContractError,
+    StagingUnavailable,
+    SupabaseCandidateSink,
+    candidate_evidence_rows,
+    reject_unknown_columns,
+)
+from .service import (
+    ACTOR_PATTERN,
+    DiscoveryIdentityError,
+    DiscoveryOutcome,
+    DiscoveryRequest,
+    DiscoveryRequestError,
+    compute_batch_key,
+    run_discovery,
+)
 
 __all__ = [
+    "ACTOR_PATTERN",
+    "CANDIDATE_COLUMNS",
+    "EVIDENCE_COLUMNS",
+    "AlreadyStaged",
     "CandidateIdentity",
     "CandidateSink",
     "CandidateSource",
+    "DiscoveryIdentityError",
     "DiscoveryOutcome",
     "DiscoveryRequest",
+    "DiscoveryRequestError",
+    "EvidencePersistenceError",
     "JsonFileSource",
     "JsonlOutboxSink",
+    "StagingContractError",
     "StagingUnavailable",
+    "SupabaseCandidateSink",
+    "candidate_evidence_rows",
+    "compute_batch_key",
     "normalize_domain",
     "normalize_name",
+    "reject_unknown_columns",
     "resolve_identity",
     "run_discovery",
 ]
