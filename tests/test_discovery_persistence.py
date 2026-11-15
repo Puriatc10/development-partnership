@@ -1,10 +1,12 @@
-"""Discovery persistence contract (Directive 03.6).
+"""Discovery persistence contract, including interrupted-write recovery.
 
-The staging write must match the pending `discovery_candidates` migration column
-for column, carry a pre-computed batch key and a trusted execution identity, and
-attach evidence to the ids the database actually returned. These tests use a fake
-PostgREST client and parse the migration SQL for the schema facts, so a change to
-either side fails here rather than at insert time.
+A stateful fake PostgREST client models the two tables and their unique
+constraints, so the tests can interrupt a write (evidence fails after candidates
+landed) and then retry to prove recovery completes without duplicating anything.
+
+What these tests do NOT prove: live RLS, the real `(candidate_id, url)` index, or
+PostgREST filter semantics. Those are read from the migration and the client, and
+are called out as unverified in the directive report.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from discovery.ports import (
     AlreadyStaged,
     EvidencePersistenceError,
     JsonlOutboxSink,
+    PartialRecoveryError,
     StagingContractError,
     SupabaseCandidateSink,
     reject_unknown_columns,
@@ -36,9 +39,11 @@ from discovery.service import (
 REPO = Path(__file__).resolve().parent.parent
 MIGRATION = REPO / "supabase" / "migrations" / "pending" / "20261113_discovery_candidates.sql"
 ACTOR = "hermes-discovery-v1"
+BATCH_CONSTRAINT = "uq_discovery_candidates_batch_domain"
+DOMAIN_CONSTRAINT = "uq_discovery_candidates_pending_domain"
 
 
-# --- fixtures -------------------------------------------------------------
+# --- fake infrastructure --------------------------------------------------
 
 
 class FakeSource:
@@ -52,28 +57,70 @@ class FakeSource:
 
 
 class FakeClient:
-    """PostgREST stand-in; records calls and returns ids like the real client."""
+    """Stateful PostgREST stand-in: enforces both constraints and supports GET filters."""
 
-    def __init__(self, *, candidate_error=None, evidence_error=None, omit_ids=False):
-        self.calls: list[tuple[str, list[dict]]] = []
-        self.candidate_error = candidate_error
-        self.evidence_error = evidence_error
-        self.omit_ids = omit_ids
+    def __init__(self, *, fail_evidence=False, reverse_insert_response=False):
+        self.candidates: list[dict] = []
+        self.evidence: list[dict] = []
+        self.calls: list[tuple[str, str, object]] = []
+        self.fail_evidence = fail_evidence
+        self.reverse_insert_response = reverse_insert_response
+        self._seq = 0
 
+    # POST -----------------------------------------------------------------
     def post(self, table, rows):
-        self.calls.append((table, [dict(r) for r in rows]))
+        rows = [dict(r) for r in rows]
+        self.calls.append(("POST", table, rows))
         if table == "discovery_candidates":
-            if self.candidate_error:
-                raise RuntimeError(self.candidate_error)
-            if self.omit_ids:
-                return [{"domain": r["domain"]} for r in rows]
-            return [{"id": f"id-{r['domain']}", "domain": r["domain"]} for r in rows]
-        if self.evidence_error:
-            raise RuntimeError(self.evidence_error)
-        return [dict(r) for r in rows]
+            for row in rows:
+                if any(c["batch_key"] == row["batch_key"] and c["domain"] == row["domain"] for c in self.candidates):
+                    raise RuntimeError(f'duplicate key value violates unique constraint "{BATCH_CONSTRAINT}"')
+                if any(c["domain"] == row["domain"] and c["status"] == "pending_review" for c in self.candidates):
+                    raise RuntimeError(f'duplicate key value violates unique constraint "{DOMAIN_CONSTRAINT}"')
+            created = []
+            for row in rows:
+                self._seq += 1
+                stored = {
+                    "id": f"id-{self._seq}",
+                    "domain": row["domain"],
+                    "status": row.get("status", "pending_review"),
+                    "batch_key": row["batch_key"],
+                    "discovered_by_agent_identity": row["discovered_by_agent_identity"],
+                }
+                self.candidates.append(stored)
+                created.append({"id": stored["id"], "domain": stored["domain"]})
+            return list(reversed(created)) if self.reverse_insert_response else created
 
-    def table_calls(self, table):
-        return [rows for name, rows in self.calls if name == table]
+        if table == "discovery_candidate_evidence":
+            if self.fail_evidence:
+                raise RuntimeError("42501 permission denied for table discovery_candidate_evidence")
+            for row in rows:
+                if any(e["candidate_id"] == row["candidate_id"] and e["url"] == row["url"] for e in self.evidence):
+                    raise RuntimeError('duplicate key value violates unique constraint "uq_discovery_candidate_evidence_url"')
+            self.evidence.extend(rows)
+            return rows
+        raise AssertionError(f"unexpected table {table}")
+
+    # GET ------------------------------------------------------------------
+    def get(self, table, params=None):
+        params = dict(params or {})
+        self.calls.append(("GET", table, params))
+        if table == "discovery_candidates":
+            rows = list(self.candidates)
+            if "batch_key" in params:
+                rows = [r for r in rows if params["batch_key"] == f"eq.{r['batch_key']}"]
+            if "discovered_by_agent_identity" in params:
+                rows = [r for r in rows if params["discovered_by_agent_identity"] == f"eq.{r['discovered_by_agent_identity']}"]
+            return [{"id": r["id"], "domain": r["domain"], "status": r["status"]} for r in rows]
+        if table == "discovery_candidate_evidence":
+            flt = str(params.get("candidate_id", ""))
+            ids = flt[4:-1].split(",") if flt.startswith("in.(") else []
+            return [{"candidate_id": e["candidate_id"], "url": e["url"]} for e in self.evidence if e["candidate_id"] in ids]
+        raise AssertionError(f"unexpected table {table}")
+
+    # helpers --------------------------------------------------------------
+    def calls_for(self, method, table=None):
+        return [c for c in self.calls if c[0] == method and (table is None or c[1] == table)]
 
 
 def discovery_request(**over):
@@ -82,21 +129,27 @@ def discovery_request(**over):
     return DiscoveryRequest(**base)
 
 
-def candidate(name="Northwind Studio", domain="northwind.studio", **over):
-    row = {
+def candidate(name, domain, urls=None):
+    urls = urls or [f"https://{domain}/work", f"https://{domain}/about"]
+    return {
         "name": name,
         "domain": domain,
         "source_url": f"https://webflow.com/experts/{domain}",
-        "evidence": [
-            {"url": f"https://{domain}/work", "excerpt": "Four commercial client case studies."},
-            {"url": f"https://{domain}/about", "excerpt": "Webflow with custom JavaScript."},
-        ],
+        "evidence": [{"url": u, "excerpt": f"Evidence from {u}"} for u in urls],
     }
-    row.update(over)
-    return row
 
 
-# --- 1: payload matches the migration ------------------------------------
+def two_candidates():
+    return [candidate("Alpha Studio", "alpha.com"), candidate("Beta Studio", "beta.com")]
+
+
+def run(client, rows, **kwargs):
+    return run_discovery(
+        discovery_request(), FakeSource(rows), SupabaseCandidateSink(client), actor=ACTOR, **kwargs
+    )
+
+
+# --- schema contract ------------------------------------------------------
 
 
 def _migration_columns(table: str) -> set[str]:
@@ -107,214 +160,271 @@ def _migration_columns(table: str) -> set[str]:
         line = line.strip()
         if not line or line.startswith(("CONSTRAINT", "PRIMARY", "UNIQUE", "REFERENCES", "--")):
             continue
-        # a column line is "<name> <type...>"; types may be own enums (lowercase)
         match = re.match(r"([a-z_][a-z0-9_]*)\s+[A-Za-z_]", line)
         if match and match.group(1) not in {"id", "created_at", "updated_at"}:
             columns.add(match.group(1))
     return columns
 
 
-#: Written only by the operator at Human Gate 1, never by a discovery agent.
-OPERATOR_ONLY_COLUMNS = frozenset(
-    {"reviewed_by_human_id", "reviewed_at", "review_notes", "converted_company_id"}
-)
+OPERATOR_ONLY = frozenset({"reviewed_by_human_id", "reviewed_at", "review_notes", "converted_company_id"})
 
 
 def test_candidate_payload_matches_the_migration_columns():
-    declared = _migration_columns("discovery_candidates")
-    assert CANDIDATE_COLUMNS == declared - OPERATOR_ONLY_COLUMNS
-    assert not (CANDIDATE_COLUMNS & OPERATOR_ONLY_COLUMNS), "an agent must never write review columns"
+    assert CANDIDATE_COLUMNS == _migration_columns("discovery_candidates") - OPERATOR_ONLY
+    assert not (CANDIDATE_COLUMNS & OPERATOR_ONLY), "an agent must never write review columns"
 
 
 def test_evidence_payload_matches_the_migration_columns():
-    declared = _migration_columns("discovery_candidate_evidence")
-    assert EVIDENCE_COLUMNS == declared
+    assert EVIDENCE_COLUMNS == _migration_columns("discovery_candidate_evidence")
 
 
-# --- 2/3/4: batch key and trusted identity -------------------------------
+def test_unknown_column_is_rejected_not_dropped():
+    row = {key: "x" for key in CANDIDATE_COLUMNS}
+    row["discovery_source"] = "webflow_experts"
+    with pytest.raises(StagingContractError) as exc:
+        reject_unknown_columns([row], CANDIDATE_COLUMNS, "discovery_candidates")
+    assert "discovery_source" in str(exc.value)
 
 
-def test_batch_key_is_computed_before_persistence_and_carried_on_every_row():
+# --- 1: first execution ---------------------------------------------------
+
+
+def test_first_execution_stages_candidates_and_evidence():
+    client = FakeClient()
+    outcome = run(client, two_candidates())
+
+    assert outcome.staged == 2 and outcome.recovered == 0
+    assert outcome.evidence_staged == 4
+    assert len(client.candidates) == 2 and len(client.evidence) == 4
+    assert {e["candidate_id"] for e in client.evidence} == {c["id"] for c in client.candidates}
+
+
+def test_batch_key_is_computed_before_persistence_and_is_order_independent():
+    rows = two_candidates()
+    first = FakeClient()
+    second = FakeClient()
+    a = run(first, rows)
+    b = run(second, list(reversed(rows)))
+    assert a.idempotency_key == b.idempotency_key
+    posted = first.calls_for("POST", "discovery_candidates")[0][2]
+    assert {r["batch_key"] for r in posted} == {a.idempotency_key}
+
+
+# --- 2: evidence failure is never success --------------------------------
+
+
+def test_evidence_failure_leaves_candidates_and_reports_failure():
+    client = FakeClient(fail_evidence=True)
+    with pytest.raises(EvidencePersistenceError) as exc:
+        run(client, two_candidates())
+    assert exc.value.staged_candidates == 2
+    assert len(client.candidates) == 2, "staged candidates must not be rolled back"
+    assert client.evidence == []
+
+
+# --- 3/4/5/7: retry recovers the same batch ------------------------------
+
+
+def test_retry_recovers_existing_candidate_ids_and_completes_evidence():
+    client = FakeClient()
+    first = run(client, two_candidates())
+    client.evidence.clear()  # simulate: candidates landed, evidence never did
+
+    second = run(client, two_candidates())
+    assert second.staged == 0
+    assert second.recovered == 2
+    assert second.evidence_staged == 4
+    assert second.idempotency_key == first.idempotency_key
+    assert len(client.candidates) == 2, "recovery must not insert a second candidate set"
+
+    # the recovery GET is scoped by batch_key AND the trusted actor
+    get = [c for c in client.calls_for("GET", "discovery_candidates")][-1][2]
+    assert get["batch_key"] == f"eq.{first.idempotency_key}"
+    assert get["discovered_by_agent_identity"] == f"eq.{ACTOR}"
+
+
+def test_third_execution_duplicates_neither_candidates_nor_evidence():
+    client = FakeClient()
+    run(client, two_candidates())
+    run(client, two_candidates())
+    third = run(client, two_candidates())
+    assert third.staged == 0 and third.recovered == 2
+    assert third.evidence_staged == 0, "every citation already exists"
+    assert len(client.candidates) == 2
+    assert len(client.evidence) == 4
+
+
+def test_partial_evidence_is_completed_without_duplicating_the_rest():
+    client = FakeClient()
+    run(client, two_candidates())
+    client.evidence = [e for e in client.evidence if e["url"].endswith("/work")]  # 2 of 4 survived
+
+    outcome = run(client, two_candidates())
+    assert outcome.recovered == 2
+    assert outcome.evidence_staged == 2, "only the missing citations are inserted"
+    assert len(client.evidence) == 4
+
+
+def test_same_batch_constraint_does_not_prevent_evidence_recovery():
+    client = FakeClient()
+    run(client, two_candidates())
+    client.evidence.clear()
+    run(client, two_candidates())
+    # the second run hit the batch constraint and still wrote evidence
+    assert len(client.evidence) == 4
+
+
+# --- 8: another batch owns the domain ------------------------------------
+
+
+def test_pending_domain_from_another_batch_is_a_conflict_not_a_recovery():
+    client = FakeClient()
+    # someone else staged alpha.com under a different batch/actor
+    client.candidates.append(
+        {
+            "id": "id-other",
+            "domain": "alpha.com",
+            "status": "pending_review",
+            "batch_key": "some-other-batch",
+            "discovered_by_agent_identity": "other-agent-v1",
+        }
+    )
+    outcome = run(client, [candidate("Alpha Studio", "alpha.com")])
+
+    assert outcome.staged == 0 and outcome.recovered == 0
+    assert outcome.already_staged[0]["reason"] == "domain_staged_elsewhere"
+    assert outcome.already_staged[0]["same_batch"] is False
+    assert outcome.already_staged[0]["constraint"] == DOMAIN_CONSTRAINT
+    assert client.evidence == [], "no evidence may be attached to another batch's candidate"
+    assert len(client.candidates) == 1, "ownership must not be overwritten"
+
+
+# --- 9/13: recovery never adopts foreign or partial rows -----------------
+
+
+def test_recovery_never_attaches_evidence_to_another_actors_candidate():
+    client = FakeClient()
+    batch_key = compute_batch_key(discovery_request(), [{"domain": "alpha.com"}])
+    client.candidates.append(
+        {
+            "id": "id-foreign",
+            "domain": "alpha.com",
+            "status": "pending_review",
+            "batch_key": batch_key,
+            "discovered_by_agent_identity": "other-agent-v1",
+        }
+    )
+    with pytest.raises(StagingContractError) as exc:
+        # same batch_key, different actor: the scoped GET returns nothing, so the
+        # insert collides and recovery has nothing it is allowed to adopt
+        run(client, [candidate("Alpha Studio", "alpha.com")])
+    assert "no rows are visible" in str(exc.value)
+    assert client.evidence == []
+
+
+def test_partial_batch_is_not_reported_as_fully_recovered():
+    client = FakeClient()
+    run(client, two_candidates())
+    client.candidates = [c for c in client.candidates if c["domain"] == "alpha.com"]  # beta vanished
+    client.evidence.clear()
+    with pytest.raises(PartialRecoveryError) as exc:
+        run(client, two_candidates())
+    assert exc.value.expected and exc.value.found == ("alpha.com",)
+    assert client.evidence == [], "an incomplete recovery must not write evidence"
+
+
+def test_recovery_refuses_a_candidate_that_is_no_longer_pending():
+    client = FakeClient()
+    run(client, two_candidates())
+    for row in client.candidates:
+        row["status"] = "approved"
+    client.evidence.clear()
+    with pytest.raises(PartialRecoveryError) as exc:
+        run(client, two_candidates())
+    assert "not pending_review" in str(exc.value)
+
+
+# --- 11: response integrity ----------------------------------------------
+
+
+def test_missing_ids_on_insert_fail_closed():
+    class NoIdClient(FakeClient):
+        def post(self, table, rows):
+            result = super().post(table, rows)
+            if table == "discovery_candidates":
+                return [{"domain": r["domain"]} for r in result]
+            return result
+
+    client = NoIdClient()
+    with pytest.raises(StagingContractError) as exc:
+        run(client, [candidate("Alpha Studio", "alpha.com")])
+    assert "id" in str(exc.value)
+
+
+def test_insert_response_order_does_not_affect_evidence_association():
+    client = FakeClient(reverse_insert_response=True)
+    outcome = run(client, two_candidates())
+    assert outcome.evidence_staged == 4
+    by_id = {c["id"]: c["domain"] for c in client.candidates}
+    for row in client.evidence:
+        assert row["url"].startswith(f"https://{by_id[row['candidate_id']]}/")
+
+
+# --- 10/14: no bypass, no unwanted writes --------------------------------
+
+
+def test_staging_uses_only_the_injected_client_and_no_service_role():
     client = FakeClient()
     sink = SupabaseCandidateSink(client)
-    outcome = run_discovery(discovery_request(), FakeSource([candidate()]), sink, actor=ACTOR)
-
-    rows = client.table_calls("discovery_candidates")[0]
-    assert rows[0]["batch_key"] == outcome.idempotency_key
-    assert rows[0]["batch_key"] == compute_batch_key(discovery_request(), outcome.accepted)
-    assert re.fullmatch(r"[0-9a-f]{64}", rows[0]["batch_key"])
+    run_discovery(discovery_request(), FakeSource([candidate("Alpha Studio", "alpha.com")]), sink, actor=ACTOR)
+    assert sink.client is client
+    source = (REPO / "discovery" / "ports.py").read_text(encoding="utf-8")
+    assert "service_role" not in source, "no service-role bypass may exist in the staging path"
 
 
-def test_batch_key_is_order_independent_within_the_same_candidate_set():
-    rows = [candidate("Alpha", "alpha.com"), candidate("Beta", "beta.com")]
-    first = run_discovery(discovery_request(), FakeSource(rows), SupabaseCandidateSink(FakeClient()), actor=ACTOR)
-    second = run_discovery(
-        discovery_request(), FakeSource(list(reversed(rows))), SupabaseCandidateSink(FakeClient()), actor=ACTOR
+def test_existing_company_and_domain_conflict_are_never_written():
+    existing = [
+        {"id": "c1", "name": "Alpha Studio", "normalized_name": normalize_name("Alpha Studio"), "primary_domain": "alpha.com"},
+        {"id": "c2", "name": "Beta Studio", "normalized_name": normalize_name("Beta Studio"), "primary_domain": "beta.com"},
+    ]
+    client = FakeClient()
+    matched = run(client, [candidate("Alpha Studio", "alpha.com")], existing_companies=existing)
+    assert matched.staged == 0 and matched.existing_matches and client.calls == []
+
+    client = FakeClient()
+    conflicted = run(
+        client,
+        [candidate("Beta Studio", "alpha.com")],
+        existing_companies=existing,
     )
-    assert first.idempotency_key == second.idempotency_key
+    assert conflicted.staged == 0 and conflicted.conflicts and client.calls == []
 
 
-def test_agent_identity_comes_from_the_execution_context_not_the_payload():
-    sneaky = candidate(discovered_by_agent_identity="someone-else", source_name="reflected_by_provider")
+def test_invalid_identity_fails_before_any_write():
     client = FakeClient()
-    run_discovery(discovery_request(), FakeSource([sneaky]), SupabaseCandidateSink(client), actor=ACTOR)
-    row = client.table_calls("discovery_candidates")[0][0]
-    assert row["discovered_by_agent_identity"] == ACTOR
-
-
-@pytest.mark.parametrize("bad_actor", ["", "  ", "Bad Identity", "UPPER", "a"])
-def test_missing_or_invalid_identity_fails_closed(bad_actor):
-    client = FakeClient()
-    with pytest.raises(DiscoveryIdentityError) as exc:
-        run_discovery(discovery_request(), FakeSource([candidate()]), SupabaseCandidateSink(client), actor=bad_actor)
-    assert "trusted execution identity" in str(exc.value)
-    assert client.calls == [], "nothing may be staged without a trusted identity"
+    with pytest.raises(DiscoveryIdentityError):
+        run_discovery(discovery_request(), FakeSource(two_candidates()), SupabaseCandidateSink(client), actor="")
+    assert client.calls == []
     assert ACTOR_PATTERN.match(ACTOR)
 
 
-# --- 5/6: two-stage write and evidence association -----------------------
-
-
-def test_evidence_is_associated_with_the_ids_the_insert_returned():
+def test_duplicate_urls_in_one_input_are_collapsed():
     client = FakeClient()
-    rows = [candidate("Alpha", "alpha.com"), candidate("Beta", "beta.com")]
-    run_discovery(discovery_request(), FakeSource(rows), SupabaseCandidateSink(client), actor=ACTOR)
-
-    evidence = client.table_calls("discovery_candidate_evidence")
-    assert len(evidence) == 1, "the two candidates' evidence goes in one insert"
-    pairs = {(r["candidate_id"], r["url"]) for r in evidence[0]}
-    assert pairs == {
-        ("id-alpha.com", "https://alpha.com/work"),
-        ("id-alpha.com", "https://alpha.com/about"),
-        ("id-beta.com", "https://beta.com/work"),
-        ("id-beta.com", "https://beta.com/about"),
-    }
-    assert all(set(r) == EVIDENCE_COLUMNS for r in evidence[0])
+    row = candidate("Alpha Studio", "alpha.com", urls=["https://alpha.com/work", "https://alpha.com/work"])
+    outcome = run(client, [row])
+    assert outcome.evidence_staged == 1
+    assert len(client.evidence) == 1
 
 
-def test_insert_without_ids_fails_instead_of_guessing():
-    client = FakeClient(omit_ids=True)
-    with pytest.raises(StagingContractError) as exc:
-        run_discovery(discovery_request(), FakeSource([candidate()]), SupabaseCandidateSink(client), actor=ACTOR)
-    assert "id" in str(exc.value)
-    assert client.table_calls("discovery_candidate_evidence") == []
-
-
-def test_evidence_write_failure_is_not_reported_as_success():
-    client = FakeClient(evidence_error="42501 permission denied for table discovery_candidate_evidence")
-    with pytest.raises(EvidencePersistenceError) as exc:
-        run_discovery(discovery_request(), FakeSource([candidate()]), SupabaseCandidateSink(client), actor=ACTOR)
-    assert exc.value.staged_candidates == 1
-    assert "permission denied" in str(exc.value)
-
-
-# --- 7: retry semantics --------------------------------------------------
-
-
-def test_retry_of_the_same_batch_is_reported_as_already_staged_not_staged():
-    for constraint in ("uq_discovery_candidates_batch_domain", "uq_discovery_candidates_pending_domain"):
-        client = FakeClient(candidate_error=f'duplicate key value violates unique constraint "{constraint}"')
-        outcome = run_discovery(discovery_request(), FakeSource([candidate()]), SupabaseCandidateSink(client), actor=ACTOR)
-        assert outcome.staged == 0, "a unique violation is not a staged row"
-        assert outcome.stats["already_staged"] == 1
-        assert outcome.already_staged[0]["constraint"] == constraint
-        assert outcome.already_staged[0]["same_batch"] is ("batch" in constraint)
-
-
-# --- 8/9: never insert an existing company or a conflict -----------------
-
-
-def test_existing_company_match_is_never_inserted():
-    client = FakeClient()
-    existing = [{"id": "c1", "name": "Northwind Studio", "normalized_name": normalize_name("Northwind Studio"),
-                 "primary_domain": "northwind.studio"}]
-    outcome = run_discovery(
-        discovery_request(), FakeSource([candidate()]), SupabaseCandidateSink(client),
-        actor=ACTOR, existing_companies=existing,
-    )
-    assert outcome.staged == 0
-    assert outcome.existing_matches[0]["matched_company_id"] == "c1"
-    assert client.calls == [], "no write may be attempted for a known company"
-
-
-def test_domain_conflict_is_never_inserted():
-    client = FakeClient()
-    existing = [
-        {"id": "c1", "name": "Alpha", "normalized_name": "alpha", "primary_domain": "alpha.com"},
-        {"id": "c2", "name": "Beta", "normalized_name": "beta", "primary_domain": "beta.com"},
-    ]
-    outcome = run_discovery(
-        discovery_request(), FakeSource([candidate("Beta", "alpha.com")]), SupabaseCandidateSink(client),
-        actor=ACTOR, existing_companies=existing,
-    )
-    assert outcome.staged == 0
-    assert outcome.conflicts and "domain owned by one company" in outcome.conflicts[0]["reason"]
-    assert client.calls == []
-
-
-# --- 10/11: RLS roles in the migration ----------------------------------
-
-
-def _policies() -> dict[str, str]:
-    sql = MIGRATION.read_text(encoding="utf-8")
-    found = {}
-    for match in re.finditer(
-        r"CREATE POLICY (\w+) ON (\w+) FOR (\w+) TO (\w+)(.*?);", sql, re.S
-    ):
-        found[match.group(1)] = f"{match.group(2)} FOR {match.group(3)} TO {match.group(4)}"
-    return found
-
-
-def test_agents_cannot_approve_reject_or_convert_candidates():
-    policies = _policies()
-    agent_policies = {name: body for name, body in policies.items() if name.startswith("agent_")}
-    assert agent_policies, "agent staging policies must exist"
-    for name, body in agent_policies.items():
-        assert "FOR INSERT" in body or "FOR SELECT" in body, f"{name} grants more than insert/select: {body}"
-        assert "FOR ALL" not in body
-        assert "FOR UPDATE" not in body and "FOR DELETE" not in body
-    # the candidate INSERT policy is the one that must pin the review columns shut
-    sql = MIGRATION.read_text(encoding="utf-8")
-    candidates_insert = sql.split("CREATE POLICY agent_insert_discovery_candidates", 1)[1].split(";", 1)[0]
-    assert "reviewed_by_human_id IS NULL" in candidates_insert
-    assert "converted_company_id IS NULL" in candidates_insert
-    assert "status = 'pending_review'" in candidates_insert
-
-
-def test_operator_human_gate_1_path_is_retained():
-    policies = _policies()
-    operator = [n for n, b in policies.items() if b.startswith("discovery_candidates") and "TO authenticated" in b]
-    assert "human_operator_all_discovery_candidates" in policies
-    assert "FOR ALL" in policies["human_operator_all_discovery_candidates"]
-    assert operator, "an operator policy must exist on the staging table"
-    sql = MIGRATION.read_text(encoding="utf-8")
-    assert "is_human_operator()" in sql
-
-
-# --- 12: unknown columns cannot slip in ----------------------------------
-
-
-def test_unknown_column_in_a_candidate_row_is_rejected_not_dropped():
-    client = FakeClient()
-    sink = SupabaseCandidateSink(client)
-    row = {k: "x" for k in CANDIDATE_COLUMNS}
-    row["discovery_source"] = "webflow_experts"  # the column this directive removed
-    with pytest.raises(StagingContractError) as exc:
-        sink.write(discovery_request(), [row], [])
-    assert "discovery_source" in str(exc.value)
-    assert client.calls == []
-
-
-def test_reject_unknown_columns_allows_a_clean_row():
-    reject_unknown_columns([{k: "x" for k in CANDIDATE_COLUMNS}], CANDIDATE_COLUMNS, "discovery_candidates")
-
-
-# --- the JSONL sink keeps working for local exercises --------------------
-
-
-def test_jsonl_sink_still_accepts_the_new_payload(tmp_path):
+def test_jsonl_sink_reports_created_and_evidence(tmp_path):
     outbox = tmp_path / "outbox.jsonl"
-    outcome = run_discovery(discovery_request(), FakeSource([candidate()]), JsonlOutboxSink(outbox), actor=ACTOR)
-    assert outcome.staged == 1
-    line = outbox.read_text(encoding="utf-8").strip()
-    assert ACTOR in line and "batch_key" in line
+    outcome = run_discovery(discovery_request(), FakeSource(two_candidates()), JsonlOutboxSink(outbox), actor=ACTOR)
+    assert outcome.staged == 2 and outcome.evidence_staged == 4
+    text = outbox.read_text(encoding="utf-8")
+    assert ACTOR in text and "batch_key" in text
+
+
+def test_already_staged_exception_keeps_its_domains():
+    exc = AlreadyStaged(DOMAIN_CONSTRAINT, 2, domains=["a.com", "b.com"])
+    assert exc.domains == ("a.com", "b.com")
+    assert exc.same_batch is False

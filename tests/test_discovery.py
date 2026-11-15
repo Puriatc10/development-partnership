@@ -19,7 +19,7 @@ from discovery.identity import (
     normalize_name,
     resolve_identity,
 )
-from discovery.ports import JsonlOutboxSink, StagingUnavailable, SupabaseCandidateSink
+from discovery.ports import JsonlOutboxSink, StagingResult, StagingUnavailable, SupabaseCandidateSink
 from discovery.service import (
     DiscoveryRequest,
     DiscoveryRequestError,
@@ -52,7 +52,7 @@ class RecordingSink:
 
     def write(self, request, candidates, evidence):
         self.writes.append({"candidates": list(candidates), "evidence": list(evidence)})
-        return len(candidates)
+        return StagingResult(created=len(candidates), evidence=len(evidence))
 
 
 def request(**over):
@@ -240,6 +240,18 @@ def test_missing_staging_table_produces_an_actionable_error():
             raise RuntimeError('PGRST205: Could not find the table public.discovery_candidates')
 
     sink = SupabaseCandidateSink(MissingTableClient())
+    row = {
+        "name": "A",
+        "normalized_name": "a",
+        "domain": "a.com",
+        "source_name": "webflow_experts",
+        "source_url": "https://a.com",
+        "discovered_at": "2026-01-01T00:00:00+00:00",
+        "signals": {},
+        "status": "pending_review",
+        "batch_key": "k" * 64,
+        "discovered_by_agent_identity": "hermes-discovery-v1",
+    }
     with pytest.raises(StagingUnavailable) as exc:
-        sink.write(request(), [{"name": "A", "domain": "a.com"}], [])
+        sink.write(request(), [row], [])
     assert "discovery_candidates" in str(exc.value)

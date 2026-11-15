@@ -23,7 +23,7 @@ from .identity import (
     normalize_name,
     resolve_identity,
 )
-from .ports import AlreadyStaged, CandidateSink, CandidateSource, candidate_evidence_rows
+from .ports import AlreadyStaged, CandidateSink, CandidateSource, StagingResult, candidate_evidence_rows
 
 APPROVED_SOURCES = frozenset(
     {
@@ -92,6 +92,8 @@ class DiscoveryOutcome:
     rejected: tuple[dict[str, Any], ...]
     already_staged: tuple[dict[str, Any], ...]
     staged: int
+    recovered: int
+    evidence_staged: int
     idempotency_key: str
     source_name: str
     actor: str
@@ -110,6 +112,8 @@ class DiscoveryOutcome:
             "rejected": list(self.rejected),
             "already_staged": list(self.already_staged),
             "staged": self.staged,
+            "recovered": self.recovered,
+            "evidence_staged": self.evidence_staged,
             "idempotency_key": self.idempotency_key,
             "source_name": self.source_name,
             "actor": self.actor,
@@ -256,21 +260,24 @@ def run_discovery(
         row["discovered_by_agent_identity"] = actor
 
     already_staged: list[dict[str, Any]] = []
+    result = StagingResult()
     try:
-        staged = sink.write(request, accepted, evidence)
+        result = sink.write(request, accepted, evidence)
     except AlreadyStaged as exc:
-        # A unique violation is not a staged row: report it as its own outcome.
+        # Scenario D: a different batch owns these domains. Report them explicitly
+        # and adopt nothing — no evidence is attached to another batch's candidate.
+        conflicting = set(exc.domains) or {str(row["domain"]) for row in accepted}
         already_staged = [
             {
                 "name": row["name"],
                 "domain": row["domain"],
-                "reason": "already_staged",
+                "reason": "domain_staged_elsewhere",
                 "constraint": exc.constraint,
                 "same_batch": exc.same_batch,
             }
             for row in accepted
+            if str(row["domain"]) in conflicting
         ]
-        staged = 0
 
     stats = {
         "raw": len(raw),
@@ -280,7 +287,9 @@ def run_discovery(
         "conflicts": len(conflicts),
         "rejected": len(rejected),
         "already_staged": len(already_staged),
-        "staged": staged,
+        "staged": result.created,
+        "recovered": result.recovered,
+        "evidence_staged": result.evidence,
     }
     return DiscoveryOutcome(
         accepted=tuple(accepted),
@@ -289,7 +298,9 @@ def run_discovery(
         conflicts=tuple(conflicts),
         rejected=tuple(rejected),
         already_staged=tuple(already_staged),
-        staged=staged,
+        staged=result.created,
+        recovered=result.recovered,
+        evidence_staged=result.evidence,
         idempotency_key=batch_key,
         source_name=source.name,
         actor=actor,
