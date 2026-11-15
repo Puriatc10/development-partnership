@@ -48,10 +48,36 @@ class StagingResult:
     created: int = 0
     recovered: int = 0
     evidence: int = 0
+    #: Candidates owned by another pending batch; each carries its domain and reason.
+    conflicts: tuple[dict[str, Any], ...] = ()
 
     @property
     def total(self) -> int:
         return self.created + self.recovered
+
+
+class CandidatePersistenceError(RuntimeError):
+    """A candidate's persistence state could not be established.
+
+    Raised when an insert fails for a reason the sink cannot classify — a missing
+    table is :class:`StagingUnavailable`, a known unique violation is either a
+    recovery or a reported conflict, anything else is unknown. The partial counts
+    are carried so the caller can see what did land, but the run is a failure:
+    reporting success here would claim rows we cannot verify.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        staged: Sequence[str] = (),
+        recovered: Sequence[str] = (),
+        conflicts: Sequence[Mapping[str, Any]] = (),
+    ) -> None:
+        super().__init__(message)
+        self.staged = tuple(staged)
+        self.recovered = tuple(recovered)
+        self.conflicts = tuple(conflicts)
 
 
 class StagingUnavailable(RuntimeError):
@@ -226,40 +252,76 @@ class SupabaseCandidateSink:
         candidates: Sequence[Mapping[str, Any]],
         evidence: Sequence[Mapping[str, Any]],
     ) -> StagingResult:
+        """Stage candidates one row at a time so one conflict cannot block the rest.
+
+        A multi-row INSERT is atomic: a single ``uq_discovery_candidates_pending_domain``
+        violation rejects every row in the batch, including candidates that have
+        nothing to do with the conflict. Per-row inserts cost one request per
+        candidate (the directive caps a batch at 50) and buy exact, per-candidate
+        outcomes: staged, recovered, or conflicted.
+        """
         if not candidates:
             return StagingResult()
 
         rows = [dict(c) for c in candidates]
         reject_unknown_columns(rows, CANDIDATE_COLUMNS, self.TABLE)
-        batch_key = self._single(rows, "batch_key")
-        actor = self._single(rows, "discovered_by_agent_identity")
-        expected_domains = [str(row["domain"]) for row in rows]
 
-        try:
-            inserted = self.client.post(self.TABLE, rows)
-        except Exception as exc:  # noqa: BLE001 - normalize any client error
-            message = str(exc)
-            if self._is_missing_table(message):
-                raise StagingUnavailable(
-                    "discovery_candidates is not deployed. Apply "
-                    "supabase/migrations/pending/*_discovery_candidates.sql first, or use "
-                    "JsonlOutboxSink for a local exercise."
+        staged_domains: list[str] = []
+        recovered_domains: list[str] = []
+        conflicts: list[dict[str, Any]] = []
+        id_by_domain: dict[str, Any] = {}
+
+        for row in rows:
+            domain = str(row["domain"])
+            batch_key = self._single([row], "batch_key")
+            actor = self._single([row], "discovered_by_agent_identity")
+            try:
+                inserted = self.client.post(self.TABLE, [row])
+            except Exception as exc:  # noqa: BLE001 - classify, never mask
+                message = str(exc)
+                if self._is_missing_table(message):
+                    raise StagingUnavailable(
+                        "discovery_candidates is not deployed. Apply "
+                        "supabase/migrations/pending/*_discovery_candidates.sql first, or use "
+                        "JsonlOutboxSink for a local exercise."
+                    ) from exc
+                constraint = self._constraint_from(message)
+                if constraint == BATCH_CONSTRAINT:
+                    # this batch already wrote this row: recover its real id
+                    id_by_domain[domain] = self._recover_candidate(batch_key, actor, domain)
+                    recovered_domains.append(domain)
+                    continue
+                if constraint == PENDING_DOMAIN_CONSTRAINT:
+                    # another pending batch owns the domain. Report it; adopt nothing.
+                    conflicts.append(
+                        {
+                            "domain": domain,
+                            "name": row.get("name"),
+                            "reason": "domain_staged_elsewhere",
+                            "constraint": constraint,
+                        }
+                    )
+                    continue
+                # an unknown failure means this row's state cannot be established
+                raise CandidatePersistenceError(
+                    f"candidate {domain!r} could not be staged and its state is unknown: {message}",
+                    staged=tuple(staged_domains),
+                    recovered=tuple(recovered_domains),
+                    conflicts=tuple(conflicts),
                 ) from exc
-            constraint = self._constraint_from(message)
-            if constraint == BATCH_CONSTRAINT:
-                # Scenario C: this batch is already staged. Recover its real ids and
-                # finish the evidence stage instead of returning early.
-                id_by_domain = self._recover_batch(batch_key, actor, expected_domains)
-                written = self._write_evidence(id_by_domain, evidence)
-                return StagingResult(created=0, recovered=len(id_by_domain), evidence=written)
-            if constraint == PENDING_DOMAIN_CONSTRAINT:
-                # Scenario D: another batch owns these domains. Never adopt them.
-                raise AlreadyStaged(constraint, len(rows), domains=expected_domains) from exc
-            raise
 
-        id_by_domain = self._index_inserted(inserted, expected_domains)
-        written = self._write_evidence(id_by_domain, evidence)
-        return StagingResult(created=len(rows), evidence=written)
+            id_by_domain[domain] = self._index_inserted(inserted, [domain])[domain]
+            staged_domains.append(domain)
+
+        evidence_written = self._write_evidence(
+            id_by_domain, evidence, frozenset(str(c["domain"]) for c in conflicts)
+        )
+        return StagingResult(
+            created=len(staged_domains),
+            recovered=len(recovered_domains),
+            evidence=evidence_written,
+            conflicts=tuple(conflicts),
+        )
 
     # -- helpers -----------------------------------------------------------
     @staticmethod
@@ -284,7 +346,7 @@ class SupabaseCandidateSink:
 
     @staticmethod
     def _index_inserted(inserted: Any, expected_domains: Sequence[str]) -> dict[str, Any]:
-        """Turn the insert response into domain -> id, refusing anything ambiguous."""
+        """Turn a single-row insert response into domain -> id, refusing ambiguity."""
         if not isinstance(inserted, list) or len(inserted) != len(expected_domains):
             raise StagingContractError(
                 f"candidate insert returned {len(inserted) if isinstance(inserted, list) else 'no'} row(s) "
@@ -303,13 +365,14 @@ class SupabaseCandidateSink:
             raise StagingContractError(f"inserted rows did not come back for domain(s): {missing}")
         return id_by_domain
 
-    def _recover_batch(self, batch_key: str, actor: str, expected_domains: Sequence[str]) -> dict[str, Any]:
-        """Load the rows this batch + actor already owns and verify they are the whole batch.
+    def _recover_candidate(self, batch_key: str, actor: str, domain: str) -> Any:
+        """Return the verified id of a row this batch + actor already owns.
 
         Scoped by ``batch_key`` *and* ``discovered_by_agent_identity`` so RLS shows
-        only this agent's rows. Anything other than an exact match — a partial set,
-        an extra domain, another actor's row, a non-pending status — fails closed:
-        attaching evidence to rows we cannot account for is worse than failing.
+        only this agent's rows. Anything other than exactly one matching
+        ``pending_review`` row for the requested domain fails closed: a batch may
+        legitimately be partially staged now, but an individual row must still be
+        unambiguous before evidence is attached to it.
         """
         found = self.client.get(
             self.TABLE,
@@ -317,39 +380,48 @@ class SupabaseCandidateSink:
                 "select": "id,domain,status",
                 "batch_key": f"eq.{batch_key}",
                 "discovered_by_agent_identity": f"eq.{actor}",
+                "domain": f"eq.{domain}",
             },
         )
         rows = [row for row in (found or []) if isinstance(row, Mapping)]
         if not rows:
             raise StagingContractError(
-                "the batch unique constraint fired but no rows are visible for this batch_key + actor. "
-                "Either RLS is hiding another actor's rows or the write raced; refusing to attach evidence."
+                f"the batch unique constraint fired for {domain!r} but no row is visible for this "
+                "batch_key + actor. Either RLS is hiding another actor's row or the write raced; "
+                "refusing to attach evidence."
             )
         incomplete = [row for row in rows if not row.get("id") or not row.get("domain")]
         if incomplete:
             raise StagingContractError(f"recovered rows are missing id/domain: {incomplete!r}")
-
         domains = [str(row["domain"]) for row in rows]
-        if sorted(domains) != sorted(str(d) for d in expected_domains):
+        if domains != [domain]:
             raise PartialRecoveryError(
-                f"recovery found {len(domains)} row(s) {sorted(domains)} but the batch expects "
-                f"{len(expected_domains)} {sorted(expected_domains)}; a partial batch is not a recovered batch",
-                expected=expected_domains,
+                f"recovery for {domain!r} returned an unexpected row set {domains}",
+                expected=[domain],
                 found=domains,
             )
-        not_pending = [row for row in rows if str(row.get("status") or "") != "pending_review"]
-        if not_pending:
+        if str(rows[0].get("status") or "") != "pending_review":
             raise PartialRecoveryError(
-                "recovered rows are not pending_review, so the evidence insert policy would refuse them: "
-                f"{[(row['domain'], row.get('status')) for row in not_pending]}",
-                expected=expected_domains,
+                f"recovered row {domain!r} is status {rows[0].get('status')!r}, so the evidence insert "
+                "policy would refuse it",
+                expected=[domain],
                 found=domains,
             )
-        return {str(row["domain"]): row["id"] for row in rows}
+        return rows[0]["id"]
 
-    def _write_evidence(self, id_by_domain: Mapping[str, Any], evidence: Sequence[Mapping[str, Any]]) -> int:
-        """Insert only the evidence that is not already stored for these candidates."""
-        desired = self._evidence_payload(id_by_domain, evidence)
+    def _write_evidence(
+        self,
+        id_by_domain: Mapping[str, Any],
+        evidence: Sequence[Mapping[str, Any]],
+        skip_domains: frozenset[str] = frozenset(),
+    ) -> int:
+        """Insert only the evidence that is not already stored for these candidates.
+
+        Evidence for a domain in ``skip_domains`` belongs to a candidate that was
+        reported as a cross-batch conflict: it is deliberately not written, and not
+        silently dropped either — the conflict is in the caller's result.
+        """
+        desired = self._evidence_payload(id_by_domain, evidence, skip_domains)
         if not desired:
             return 0
         reject_unknown_columns(desired, EVIDENCE_COLUMNS, self.EVIDENCE_TABLE)
@@ -390,18 +462,23 @@ class SupabaseCandidateSink:
 
     @staticmethod
     def _evidence_payload(
-        id_by_domain: Mapping[str, Any], evidence: Sequence[Mapping[str, Any]]
+        id_by_domain: Mapping[str, Any],
+        evidence: Sequence[Mapping[str, Any]],
+        skip_domains: frozenset[str] = frozenset(),
     ) -> list[dict[str, Any]]:
         """Attach each evidence record to its verified candidate id, dropping the key.
 
-        A record whose domain has no staged candidate is a contract failure, never
-        something to discard, and a repeated (candidate, url) in one input is
-        collapsed so the retry cannot double-insert it.
+        A record for a conflicted domain is skipped (the conflict is reported, not
+        hidden); a record whose domain is neither staged nor conflicted is a
+        contract failure, never something to discard. A repeated (candidate, url) in
+        one input is collapsed so a retry cannot double-insert it.
         """
         out: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
         for item in evidence:
             domain = str(item.get("domain") or "")
+            if domain in skip_domains:
+                continue
             candidate_id = id_by_domain.get(domain)
             if candidate_id is None:
                 raise StagingContractError(

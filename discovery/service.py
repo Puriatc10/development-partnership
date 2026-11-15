@@ -23,7 +23,13 @@ from .identity import (
     normalize_name,
     resolve_identity,
 )
-from .ports import AlreadyStaged, CandidateSink, CandidateSource, StagingResult, candidate_evidence_rows
+from .ports import (
+    PENDING_DOMAIN_CONSTRAINT,
+    CandidateSink,
+    CandidateSource,
+    StagingResult,
+    candidate_evidence_rows,
+)
 
 APPROVED_SOURCES = frozenset(
     {
@@ -101,7 +107,16 @@ class DiscoveryOutcome:
 
     @property
     def ok(self) -> bool:
-        return bool(self.accepted) or not self.rejected
+        """Every accepted candidate reached a verified, terminal persistence state.
+
+        ``staged``/``recovered``/``already_staged`` must account for all accepted
+        candidates and nothing may have been rejected. A returned outcome never
+        hides an unknown persistence failure — those raise
+        :class:`CandidatePersistenceError` instead of being folded into a result —
+        so ``ok`` is about completeness of the report, never about a caller's hope.
+        """
+        settled = self.staged + self.recovered + len(self.already_staged)
+        return not self.rejected and settled == len(self.accepted)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -261,22 +276,19 @@ def run_discovery(
 
     already_staged: list[dict[str, Any]] = []
     result = StagingResult()
-    try:
-        result = sink.write(request, accepted, evidence)
-    except AlreadyStaged as exc:
-        # Scenario D: a different batch owns these domains. Report them explicitly
-        # and adopt nothing — no evidence is attached to another batch's candidate.
-        conflicting = set(exc.domains) or {str(row["domain"]) for row in accepted}
+    result = sink.write(request, accepted, evidence)
+    if result.conflicts:
+        # Cross-batch conflicts are reported per candidate: the sink isolates them so
+        # unrelated candidates in the same batch were still staged.
         already_staged = [
             {
-                "name": row["name"],
-                "domain": row["domain"],
-                "reason": "domain_staged_elsewhere",
-                "constraint": exc.constraint,
-                "same_batch": exc.same_batch,
+                "name": conflict.get("name"),
+                "domain": conflict.get("domain"),
+                "reason": conflict.get("reason", "domain_staged_elsewhere"),
+                "constraint": conflict.get("constraint", PENDING_DOMAIN_CONSTRAINT),
+                "same_batch": False,
             }
-            for row in accepted
-            if str(row["domain"]) in conflicting
+            for conflict in result.conflicts
         ]
 
     stats = {

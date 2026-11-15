@@ -319,7 +319,7 @@
     "accepted": [
       {
         "batch_key": "6542171e50e0015af503f20e4c7aa56bbcff1eda2a981f138c3a8b2db2ae5915",
-        "discovered_at": "2026-11-15T20:24:04+00:00",
+        "discovered_at": "2026-11-15T20:52:18+00:00",
         "discovered_by_agent_identity": "hermes-discovery-v1",
         "domain": "northwind.studio",
         "name": "Northwind Studio",

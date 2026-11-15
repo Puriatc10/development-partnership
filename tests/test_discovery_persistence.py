@@ -21,6 +21,7 @@ from discovery.ports import (
     CANDIDATE_COLUMNS,
     EVIDENCE_COLUMNS,
     AlreadyStaged,
+    CandidatePersistenceError,
     EvidencePersistenceError,
     JsonlOutboxSink,
     PartialRecoveryError,
@@ -111,6 +112,8 @@ class FakeClient:
                 rows = [r for r in rows if params["batch_key"] == f"eq.{r['batch_key']}"]
             if "discovered_by_agent_identity" in params:
                 rows = [r for r in rows if params["discovered_by_agent_identity"] == f"eq.{r['discovered_by_agent_identity']}"]
+            if "domain" in params:
+                rows = [r for r in rows if params["domain"] == f"eq.{r['domain']}"]
             return [{"id": r["id"], "domain": r["domain"], "status": r["status"]} for r in rows]
         if table == "discovery_candidate_evidence":
             flt = str(params.get("candidate_id", ""))
@@ -318,19 +321,21 @@ def test_recovery_never_attaches_evidence_to_another_actors_candidate():
         # same batch_key, different actor: the scoped GET returns nothing, so the
         # insert collides and recovery has nothing it is allowed to adopt
         run(client, [candidate("Alpha Studio", "alpha.com")])
-    assert "no rows are visible" in str(exc.value)
+    assert "no row is visible" in str(exc.value)
     assert client.evidence == []
 
 
-def test_partial_batch_is_not_reported_as_fully_recovered():
+def test_partial_same_batch_state_is_recovered_per_candidate():
     client = FakeClient()
     run(client, two_candidates())
-    client.candidates = [c for c in client.candidates if c["domain"] == "alpha.com"]  # beta vanished
+    client.candidates = [c for c in client.candidates if c["domain"] == "alpha.com"]  # beta never landed
     client.evidence.clear()
-    with pytest.raises(PartialRecoveryError) as exc:
-        run(client, two_candidates())
-    assert exc.value.expected and exc.value.found == ("alpha.com",)
-    assert client.evidence == [], "an incomplete recovery must not write evidence"
+
+    outcome = run(client, two_candidates())
+    assert outcome.recovered == 1, "alpha.com is re-used, not re-inserted"
+    assert outcome.staged == 1, "beta.com is newly staged by this retry"
+    assert outcome.evidence_staged == 4, "both candidates end up with their citations"
+    assert len(client.candidates) == 2, "no duplicate candidate rows"
 
 
 def test_recovery_refuses_a_candidate_that_is_no_longer_pending():
@@ -341,7 +346,7 @@ def test_recovery_refuses_a_candidate_that_is_no_longer_pending():
     client.evidence.clear()
     with pytest.raises(PartialRecoveryError) as exc:
         run(client, two_candidates())
-    assert "not pending_review" in str(exc.value)
+    assert "status 'approved'" in str(exc.value)
 
 
 # --- 11: response integrity ----------------------------------------------
@@ -414,6 +419,125 @@ def test_duplicate_urls_in_one_input_are_collapsed():
     outcome = run(client, [row])
     assert outcome.evidence_staged == 1
     assert len(client.evidence) == 1
+
+
+# --- Directive 03.6.2: per-candidate conflict isolation ------------------
+
+
+def three_candidates():
+    return [
+        candidate("Alpha Studio", "alpha.com"),
+        candidate("Beta Studio", "beta.com"),
+        candidate("Gamma Studio", "gamma.com"),
+    ]
+
+
+def seed_foreign_pending(client, domain, *, batch_key="other-batch", actor="other-agent-v1"):
+    client.candidates.append(
+        {
+            "id": f"id-foreign-{domain}",
+            "domain": domain,
+            "status": "pending_review",
+            "batch_key": batch_key,
+            "discovered_by_agent_identity": actor,
+        }
+    )
+
+
+def test_one_cross_batch_conflict_does_not_block_the_other_candidates():
+    client = FakeClient()
+    seed_foreign_pending(client, "alpha.com")
+
+    outcome = run(client, three_candidates())
+
+    assert outcome.staged == 2, "beta and gamma must still be staged"
+    assert outcome.recovered == 0
+    assert [c["domain"] for c in outcome.already_staged] == ["alpha.com"]
+    assert outcome.evidence_staged == 4, "evidence only for beta and gamma"
+    assert sorted(c["domain"] for c in client.candidates) == ["alpha.com", "beta.com", "gamma.com"]
+    assert len(client.candidates) == 3, "the foreign row is not duplicated or overwritten"
+
+
+def test_only_the_conflicting_candidate_is_reported():
+    client = FakeClient()
+    seed_foreign_pending(client, "alpha.com")
+    outcome = run(client, three_candidates())
+    reported = outcome.already_staged
+    assert len(reported) == 1
+    assert reported[0]["domain"] == "alpha.com"
+    assert reported[0]["reason"] == "domain_staged_elsewhere"
+    assert reported[0]["same_batch"] is False
+    assert reported[0]["constraint"] == DOMAIN_CONSTRAINT
+
+
+def test_staged_candidates_in_a_mixed_batch_have_verified_ids_and_evidence():
+    client = FakeClient()
+    seed_foreign_pending(client, "alpha.com")
+    outcome = run(client, three_candidates())
+
+    stored = {c["domain"]: c for c in client.candidates}
+    assert len(client.evidence) == 4
+    ids = {e["candidate_id"] for e in client.evidence}
+    assert ids == {stored["beta.com"]["id"], stored["gamma.com"]["id"]}
+    assert stored["alpha.com"]["id"] == "id-foreign-alpha.com", "foreign id untouched"
+    assert outcome.stats["staged"] == 2 and outcome.stats["already_staged"] == 1
+
+
+def test_no_evidence_is_attached_to_the_conflicting_candidate():
+    client = FakeClient()
+    seed_foreign_pending(client, "alpha.com")
+    run(client, three_candidates())
+    assert all(e["candidate_id"] != "id-foreign-alpha.com" for e in client.evidence)
+    assert all("alpha.com" not in e["url"] for e in client.evidence)
+
+
+def test_a_same_batch_collision_does_not_stop_remaining_candidates():
+    client = FakeClient()
+    run(client, three_candidates())  # everything already staged
+    client.candidates = [c for c in client.candidates if c["domain"] != "gamma.com"]
+    client.evidence.clear()
+
+    outcome = run(client, three_candidates())
+    assert outcome.recovered == 2 and outcome.staged == 1
+    assert outcome.evidence_staged == 6, "all three end up with citations"
+    assert outcome.ok is True
+
+
+def test_counts_never_mix_conflict_with_staged_or_recovered():
+    client = FakeClient()
+    seed_foreign_pending(client, "alpha.com")
+    outcome = run(client, three_candidates())
+    assert outcome.staged + outcome.recovered + len(outcome.already_staged) == len(outcome.accepted)
+    assert outcome.staged == 2 and outcome.recovered == 0
+
+
+def test_unknown_insert_failure_raises_with_partial_counts():
+    class Exploding(FakeClient):
+        def post(self, table, rows):
+            if table == "discovery_candidates" and rows[0]["domain"] == "beta.com":
+                raise RuntimeError("57014 statement timeout")
+            return super().post(table, rows)
+
+    client = Exploding()
+    with pytest.raises(CandidatePersistenceError) as exc:
+        run(client, three_candidates())
+    assert exc.value.staged == ("alpha.com",)
+    assert "statement timeout" in str(exc.value)
+    assert client.evidence == [], "no evidence is written for a failed batch"
+
+
+def test_ok_is_false_when_input_was_rejected():
+    client = FakeClient()
+    bad = {"name": "No Domain", "source_url": "https://webflow.com/experts/x"}
+    outcome = run(client, [candidate("Beta Studio", "beta.com"), bad])
+    assert outcome.rejected and outcome.ok is False
+
+
+def test_ok_is_true_when_every_accepted_candidate_settled():
+    client = FakeClient()
+    seed_foreign_pending(client, "alpha.com")
+    outcome = run(client, three_candidates())
+    assert outcome.ok is True, "2 staged + 1 reported conflict settles all three"
 
 
 def test_jsonl_sink_reports_created_and_evidence(tmp_path):
