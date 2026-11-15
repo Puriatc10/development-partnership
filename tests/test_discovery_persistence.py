@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -63,7 +64,7 @@ class FakeClient:
     def __init__(self, *, fail_evidence=False, reverse_insert_response=False):
         self.candidates: list[dict] = []
         self.evidence: list[dict] = []
-        self.calls: list[tuple[str, str, object]] = []
+        self.calls: list[tuple[str, str, Any]] = []
         self.fail_evidence = fail_evidence
         self.reverse_insert_response = reverse_insert_response
         self._seq = 0
@@ -74,10 +75,18 @@ class FakeClient:
         self.calls.append(("POST", table, rows))
         if table == "discovery_candidates":
             for row in rows:
+                status = row.get("status", "pending_review")
+                # PostgreSQL checks the partial index first when it applies: a row that
+                # is still pending_review collides on `UNIQUE (domain) WHERE
+                # status='pending_review'`, even when it is this batch's own row. The
+                # composite `UNIQUE (batch_key, domain)` only fires once the stored row
+                # no longer satisfies the partial predicate.
+                if status == "pending_review" and any(
+                    c["domain"] == row["domain"] and c["status"] == "pending_review" for c in self.candidates
+                ):
+                    raise RuntimeError(f'duplicate key value violates unique constraint "{DOMAIN_CONSTRAINT}"')
                 if any(c["batch_key"] == row["batch_key"] and c["domain"] == row["domain"] for c in self.candidates):
                     raise RuntimeError(f'duplicate key value violates unique constraint "{BATCH_CONSTRAINT}"')
-                if any(c["domain"] == row["domain"] and c["status"] == "pending_review" for c in self.candidates):
-                    raise RuntimeError(f'duplicate key value violates unique constraint "{DOMAIN_CONSTRAINT}"')
             created = []
             for row in rows:
                 self._seq += 1
@@ -305,6 +314,19 @@ def test_pending_domain_from_another_batch_is_a_conflict_not_a_recovery():
 # --- 9/13: recovery never adopts foreign or partial rows -----------------
 
 
+def seed_owned_pending(client, domain):
+    """A row this run's batch + actor already owns, still pending_review."""
+    client.candidates.append(
+        {
+            "id": f"id-owned-{domain}",
+            "domain": domain,
+            "status": "pending_review",
+            "batch_key": compute_batch_key(discovery_request(), [{"domain": domain}]),
+            "discovered_by_agent_identity": ACTOR,
+        }
+    )
+
+
 def test_recovery_never_attaches_evidence_to_another_actors_candidate():
     client = FakeClient()
     batch_key = compute_batch_key(discovery_request(), [{"domain": "alpha.com"}])
@@ -317,12 +339,16 @@ def test_recovery_never_attaches_evidence_to_another_actors_candidate():
             "discovered_by_agent_identity": "other-agent-v1",
         }
     )
-    with pytest.raises(StagingContractError) as exc:
-        # same batch_key, different actor: the scoped GET returns nothing, so the
-        # insert collides and recovery has nothing it is allowed to adopt
-        run(client, [candidate("Alpha Studio", "alpha.com")])
-    assert "no row is visible" in str(exc.value)
+    # same batch_key, different actor: the scoped GET sees nothing, so this is a foreign
+    # pending conflict — never a recovery, and never a reason to adopt the row
+    outcome = run(client, [candidate("Alpha Studio", "alpha.com")])
+
+    assert outcome.staged == 0 and outcome.recovered == 0
+    assert [(c["domain"], c["reason"]) for c in outcome.already_staged] == [
+        ("alpha.com", "domain_staged_elsewhere")
+    ]
     assert client.evidence == []
+    assert client.candidates[0]["id"] == "id-foreign", "ownership is never overwritten"
 
 
 def test_partial_same_batch_state_is_recovered_per_candidate():
@@ -538,6 +564,185 @@ def test_ok_is_true_when_every_accepted_candidate_settled():
     seed_foreign_pending(client, "alpha.com")
     outcome = run(client, three_candidates())
     assert outcome.ok is True, "2 staged + 1 reported conflict settles all three"
+
+
+# --- Directive 03.7.1: classify by ownership, not by constraint name -----
+
+
+def test_partial_index_fires_for_a_same_batch_retry_like_postgres():
+    """The fake must reproduce `UNIQUE (domain) WHERE status='pending_review'`."""
+    client = FakeClient()
+    run(client, [candidate("Alpha Studio", "alpha.com")])
+    stored = client.candidates[0]
+    with pytest.raises(RuntimeError) as exc:
+        client.post(
+            "discovery_candidates",
+            [
+                {
+                    "name": "Alpha Studio",
+                    "domain": "alpha.com",
+                    "batch_key": stored["batch_key"],
+                    "discovered_by_agent_identity": stored["discovered_by_agent_identity"],
+                }
+            ],
+        )
+    assert DOMAIN_CONSTRAINT in str(exc.value), (
+        "a same-batch row that is still pending_review collides on the partial index first, "
+        "which is what PostgreSQL does"
+    )
+
+
+def test_retry_recovers_by_a_scoped_ownership_read_after_the_partial_index():
+    client = FakeClient()
+    run(client, two_candidates())
+    client.evidence.clear()
+    outcome = run(client, two_candidates())
+
+    assert outcome.recovered == 2 and outcome.staged == 0
+    assert outcome.evidence_staged == 4, "recovery must still complete the evidence stage"
+
+    ownership_reads = [
+        (i, c) for i, c in enumerate(client.calls) if c[0] == "GET" and c[1] == "discovery_candidates"
+    ]
+    assert len(ownership_reads) == 2, "one ownership read per collided candidate"
+    for index, call in ownership_reads:
+        params = call[2]
+        assert params["batch_key"].startswith("eq.")
+        assert params["discovered_by_agent_identity"] == f"eq.{ACTOR}", "the read is actor-scoped"
+        assert params["domain"].startswith("eq."), "and addressable per candidate"
+        assert client.calls[index - 1][0] == "POST", "ownership is read only after a violation, never pre-emptively"
+
+
+def test_third_execution_of_the_same_batch_writes_nothing():
+    client = FakeClient()
+    run(client, two_candidates())
+    run(client, two_candidates())
+    before = (len(client.candidates), len(client.evidence))
+    outcome = run(client, two_candidates())
+    assert (len(client.candidates), len(client.evidence)) == before
+    assert outcome.staged == 0 and outcome.recovered == 2 and outcome.evidence_staged == 0
+
+
+def test_foreign_pending_row_is_read_first_then_reported_as_a_conflict():
+    client = FakeClient()
+    seed_foreign_pending(client, "alpha.com")
+    outcome = run(client, three_candidates())
+
+    reads = [c for c in client.calls if c[0] == "GET" and c[1] == "discovery_candidates"]
+    assert any(c[2].get("domain") == "eq.alpha.com" for c in reads), (
+        "a foreign conflict is only declared after the ownership read returns nothing"
+    )
+    assert [c["domain"] for c in outcome.already_staged] == ["alpha.com"]
+    assert outcome.already_staged[0]["reason"] == "domain_staged_elsewhere"
+    assert all(e["candidate_id"] != "id-foreign-alpha.com" for e in client.evidence)
+
+
+class _BatchConstraintOnly(FakeClient):
+    """A batch-domain violation with no row this actor can see."""
+
+    def post(self, table, rows):
+        if table == "discovery_candidates":
+            raise RuntimeError(f'duplicate key value violates unique constraint "{BATCH_CONSTRAINT}"')
+        return super().post(table, rows)
+
+
+def test_batch_constraint_without_a_visible_owned_row_fails_closed():
+    client = _BatchConstraintOnly()
+    with pytest.raises(StagingContractError) as exc:
+        run(client, [candidate("Alpha Studio", "alpha.com")])
+    message = str(exc.value)
+    assert BATCH_CONSTRAINT in message and "no row is visible" in message
+    assert "domain_staged_elsewhere" not in message, "it must not be downgraded to a conflict"
+    assert client.evidence == []
+
+
+class _UnreadableOwnership(FakeClient):
+    def get(self, table, params=None):
+        if table == "discovery_candidates":
+            raise RuntimeError("57014 canceling statement due to statement timeout")
+        return super().get(table, params)
+
+
+def test_ownership_read_failure_fails_closed():
+    client = _UnreadableOwnership()
+    seed_foreign_pending(client, "alpha.com")
+    with pytest.raises(StagingContractError) as exc:
+        run(client, [candidate("Alpha Studio", "alpha.com")])
+    assert "ownership read" in str(exc.value) and "unknown" in str(exc.value)
+    assert client.evidence == [], "an unreadable owner is never treated as 'no owner'"
+
+
+def test_owned_row_that_is_no_longer_pending_is_not_recovered():
+    client = FakeClient()
+    run(client, [candidate("Alpha Studio", "alpha.com")])
+    client.candidates[0]["status"] = "approved"
+    client.evidence.clear()
+    with pytest.raises(PartialRecoveryError) as exc:
+        run(client, [candidate("Alpha Studio", "alpha.com")])
+    assert "status 'approved'" in str(exc.value)
+    assert client.evidence == []
+    assert len(client.candidates) == 1, "nothing is re-inserted behind the violation"
+
+
+class _AmbiguousOwnership(FakeClient):
+    def get(self, table, params=None):
+        rows = super().get(table, params)
+        if table == "discovery_candidates" and rows:
+            return [dict(rows[0], id="id-a"), dict(rows[0], id="id-b")]
+        return rows
+
+
+def test_ambiguous_ownership_fails_closed():
+    client = _AmbiguousOwnership()
+    seed_owned_pending(client, "alpha.com")
+    with pytest.raises(PartialRecoveryError) as exc:
+        run(client, [candidate("Alpha Studio", "alpha.com")])
+    assert "unambiguous" in str(exc.value)
+    assert client.evidence == []
+
+
+class _OwnerWithoutId(FakeClient):
+    def get(self, table, params=None):
+        rows = super().get(table, params)
+        if table == "discovery_candidates" and rows:
+            return [{"domain": rows[0]["domain"], "status": rows[0]["status"]}]
+        return rows
+
+
+def test_owned_row_without_an_id_fails_closed():
+    client = _OwnerWithoutId()
+    seed_owned_pending(client, "alpha.com")
+    with pytest.raises(StagingContractError) as exc:
+        run(client, [candidate("Alpha Studio", "alpha.com")])
+    assert "missing id/domain" in str(exc.value)
+    assert client.evidence == []
+
+
+class _OwnerWithAnotherDomain(FakeClient):
+    def get(self, table, params=None):
+        rows = super().get(table, params)
+        if table == "discovery_candidates" and rows:
+            return [dict(rows[0], domain="elsewhere.example")]
+        return rows
+
+
+def test_owned_row_for_another_domain_fails_closed():
+    client = _OwnerWithAnotherDomain()
+    seed_owned_pending(client, "alpha.com")
+    with pytest.raises(PartialRecoveryError) as exc:
+        run(client, [candidate("Alpha Studio", "alpha.com")])
+    assert "elsewhere.example" in str(exc.value)
+    assert client.evidence == []
+
+
+def test_staging_never_leaves_the_candidates_table_or_uses_update_delete():
+    client = FakeClient()
+    seed_foreign_pending(client, "alpha.com")
+    run(client, three_candidates())
+    verbs = {c[0] for c in client.calls}
+    tables = {c[1] for c in client.calls}
+    assert verbs <= {"POST", "GET"}, f"the agent staging path is INSERT+SELECT only, saw {verbs}"
+    assert tables == {"discovery_candidates", "discovery_candidate_evidence"}
 
 
 def test_jsonl_sink_reports_created_and_evidence(tmp_path):

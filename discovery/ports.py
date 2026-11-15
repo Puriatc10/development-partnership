@@ -286,13 +286,30 @@ class SupabaseCandidateSink:
                         "JsonlOutboxSink for a local exercise."
                     ) from exc
                 constraint = self._constraint_from(message)
-                if constraint == BATCH_CONSTRAINT:
-                    # this batch already wrote this row: recover its real id
-                    id_by_domain[domain] = self._recover_candidate(batch_key, actor, domain)
+                if not constraint:
+                    # an unknown failure means this row's state cannot be established
+                    raise CandidatePersistenceError(
+                        f"candidate {domain!r} could not be staged and its state is unknown: {message}",
+                        staged=tuple(staged_domains),
+                        recovered=tuple(recovered_domains),
+                        conflicts=tuple(conflicts),
+                    ) from exc
+
+                # The constraint name is a hint, not the classification. The real indexes
+                # are `UNIQUE (domain) WHERE status = 'pending_review'` (partial — this is
+                # what an ordinary same-batch retry violates, because the row is still
+                # pending) and `UNIQUE (batch_key, domain)` (which only fires once this
+                # batch's row is no longer pending). So own the row by reading it, not by
+                # reading the error: scoped by batch_key AND actor AND domain.
+                owned = self._owned_candidate(batch_key, actor, domain)
+                if owned is not None:
+                    id_by_domain[domain] = owned["id"]
                     recovered_domains.append(domain)
                     continue
                 if constraint == PENDING_DOMAIN_CONSTRAINT:
-                    # another pending batch owns the domain. Report it; adopt nothing.
+                    # a pending row exists for this domain but is not ours. The violation
+                    # proves the collision; RLS means we cannot see whose it is. Report it
+                    # and adopt nothing.
                     conflicts.append(
                         {
                             "domain": domain,
@@ -302,12 +319,13 @@ class SupabaseCandidateSink:
                         }
                     )
                     continue
-                # an unknown failure means this row's state cannot be established
-                raise CandidatePersistenceError(
-                    f"candidate {domain!r} could not be staged and its state is unknown: {message}",
-                    staged=tuple(staged_domains),
-                    recovered=tuple(recovered_domains),
-                    conflicts=tuple(conflicts),
+                # batch_key + domain is taken by something this actor cannot see: neither a
+                # recoverable own row nor a pending-domain collision. Refuse to guess.
+                raise StagingContractError(
+                    f"{constraint} fired for {domain!r} but no row is visible for this "
+                    "batch_key + actor + domain, so it is neither recoverable nor a foreign "
+                    "pending conflict (that batch's row is probably no longer pending). "
+                    "Refusing to attach evidence."
                 ) from exc
 
             id_by_domain[domain] = self._index_inserted(inserted, [domain])[domain]
@@ -365,49 +383,54 @@ class SupabaseCandidateSink:
             raise StagingContractError(f"inserted rows did not come back for domain(s): {missing}")
         return id_by_domain
 
-    def _recover_candidate(self, batch_key: str, actor: str, domain: str) -> Any:
-        """Return the verified id of a row this batch + actor already owns.
+    def _owned_candidate(self, batch_key: str, actor: str, domain: str) -> Mapping[str, Any] | None:
+        """Read the row this batch + actor owns for ``domain``, if any.
 
-        Scoped by ``batch_key`` *and* ``discovered_by_agent_identity`` so RLS shows
-        only this agent's rows. Anything other than exactly one matching
-        ``pending_review`` row for the requested domain fails closed: a batch may
-        legitimately be partially staged now, but an individual row must still be
-        unambiguous before evidence is attached to it.
+        Scoped by ``batch_key`` *and* ``discovered_by_agent_identity`` *and* ``domain``
+        so RLS shows only this agent's rows and the answer is addressable per candidate.
+
+        Returns ``None`` when nothing is visible — the caller decides whether that is a
+        foreign pending-domain conflict or a contract failure, because only the caller
+        knows which constraint fired. Anything ambiguous (two rows, missing id/domain, a
+        different domain, a status the evidence policy would refuse) raises instead of
+        being resolved by preference. A read that fails is never reported as "no row".
         """
-        found = self.client.get(
-            self.TABLE,
-            {
-                "select": "id,domain,status",
-                "batch_key": f"eq.{batch_key}",
-                "discovered_by_agent_identity": f"eq.{actor}",
-                "domain": f"eq.{domain}",
-            },
-        )
+        params = {
+            "select": "id,domain,status",
+            "batch_key": f"eq.{batch_key}",
+            "discovered_by_agent_identity": f"eq.{actor}",
+            "domain": f"eq.{domain}",
+        }
+        try:
+            found = self.client.get(self.TABLE, params)
+        except Exception as exc:  # noqa: BLE001 - unreadable ownership is not "no row"
+            raise StagingContractError(
+                f"the ownership read for {domain!r} failed after a unique violation, so whether "
+                f"this batch owns the row is unknown: {exc!r}"
+            ) from exc
+
         rows = [row for row in (found or []) if isinstance(row, Mapping)]
         if not rows:
-            raise StagingContractError(
-                f"the batch unique constraint fired for {domain!r} but no row is visible for this "
-                "batch_key + actor. Either RLS is hiding another actor's row or the write raced; "
-                "refusing to attach evidence."
-            )
+            return None
         incomplete = [row for row in rows if not row.get("id") or not row.get("domain")]
         if incomplete:
-            raise StagingContractError(f"recovered rows are missing id/domain: {incomplete!r}")
+            raise StagingContractError(f"ownership rows are missing id/domain: {incomplete!r}")
         domains = [str(row["domain"]) for row in rows]
         if domains != [domain]:
             raise PartialRecoveryError(
-                f"recovery for {domain!r} returned an unexpected row set {domains}",
+                f"ownership read for {domain!r} returned {len(domains)} row(s) {domains}; "
+                "a candidate id must be unambiguous before evidence is attached",
                 expected=[domain],
                 found=domains,
             )
         if str(rows[0].get("status") or "") != "pending_review":
             raise PartialRecoveryError(
-                f"recovered row {domain!r} is status {rows[0].get('status')!r}, so the evidence insert "
+                f"owned row {domain!r} is status {rows[0].get('status')!r}, so the evidence insert "
                 "policy would refuse it",
                 expected=[domain],
                 found=domains,
             )
-        return rows[0]["id"]
+        return rows[0]
 
     def _write_evidence(
         self,
