@@ -1,7 +1,7 @@
 # Eryndex Implementation Progress Board
 
-**Updated:** 2026-11-20
-**Branch:** `main` @ `447dc947166abed168ba0821f0f9c3314dc4524d` (154 tracked files)
+**Updated:** 2026-11-20 (after Stage 2 + qualification seam)
+**Branch:** `main` @ `ddddf59` (was `447dc94` at mission start; 168 tracked files)
 **Plan:** `docs/ERYNDEX_MASTER_EXECUTION_ROADMAP.md` defines scope, dependencies and done. This board reports status only.
 **Statuses:** `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `IN_REVIEW`, `COMPLETED`, `DEFERRED`
 
@@ -26,7 +26,7 @@
 |---|---|---|
 | Branch / HEAD | `main` @ `447dc94` | `git rev-parse HEAD` |
 | Tracked files | 154 | `git ls-files \| wc -l` |
-| Full suite | **402 collected / 396 passed / 6 skipped / 0 failed** | `pytest -q` |
+| Full suite | **428 collected / 422 passed / 6 skipped / 0 failed** | `pytest -q` |
 | Skipped | all six in `tests/db/`, `ERYNDEX_DB_URL` unset | `tests/db/test_security_fixes_db.py:31-33` |
 | Python LOC | 13,647 | `wc -l` over the eight packages |
 | Migrations applied | `20261107174129`, `20261114194622`, `20261115212728` | remote `supabase_migrations.schema_migrations` |
@@ -60,11 +60,11 @@
 | ID | Item | Owner | Status | Grade | Evidence / blocker |
 |---|---|---|---|---|---|
 | C1 | Production runner over `SupabaseCandidateSink` | Discovery | NOT_STARTED | — | nothing builds the sink outside tests; `scripts/discovery_cycle.py:88-96` uses the JSONL sink |
-| C2 | `StagingUnavailable` names the applied migration | Discovery | NOT_STARTED | — | `discovery/ports.py:284-286` still points at `pending/` |
+| C2 | `StagingUnavailable` names the applied migration | Discovery | **COMPLETED** | unit | `discovery/ports.py:283-290` now names `20261115212728` and lists grant / schema-cache / wrong-project causes |
 | C3 | Dedupe fed from real CRM data | Discovery | NOT_STARTED | — | `existing_companies` caller-supplied (`service.py:188,242`); an agent sees no companies (`20261107174129:1810-1835`) |
-| C4 | Human Gate 1 review → company registration | Discovery/CRM | NOT_STARTED | — | no review code; `register_company` writes `companies` blind (`agents/researcher/operator_cli.py:46-74`) |
-| C5 | Operator CLI for the Gate 1 loop | Operations | NOT_STARTED | — | 4 verbs, none of them review |
-| C6 | Policy-level RLS probes with simulated claims | QA | NOT_STARTED | — | discovery policies never exercised |
+| C4 | Human Gate 1 review → company registration | Discovery/CRM | **COMPLETED** | live | `operations/candidates.py`, `operations/registration.py`; candidate → approve → company `03ed5e71` on Development, re-run created nothing (`stage-2-discovery-gate1.md` §3) |
+| C5 | Operator CLI for the Gate 1 loop | Operations | **COMPLETED** | live | `python -m operations.cli whoami\|candidates list\|show\|approve\|reject\|register`; exercised end to end |
+| C6 | Policy-level RLS probes with simulated claims | QA | **COMPLETED** | policy | `scripts/rls_probe.py` 11/11 (`stage-2-discovery-gate1.md` §4); agent cannot satisfy G1, forge identity, or write companies |
 | C7 | Staging write path (insert / recover / conflict / evidence) | Discovery | COMPLETED | contract | `discovery/ports.py:229-543`; 71 tests; `directive-03-7-1…` |
 | C8 | Discovery migration applied + catalogue-verified | CRM | COMPLETED | live | `20261115212728…`; `directive-03-7…` §4 |
 
@@ -93,8 +93,8 @@
 
 | ID | Item | Owner | Status | Grade | Evidence / blocker |
 |---|---|---|---|---|---|
-| F1 | findings → `QualificationInput` loader | Qualification | NOT_STARTED | — | nothing selects `research_findings` for scoring |
-| F2 | Live scorecard persistence | Qualification | NOT_STARTED | — | `qualification_repository.py:137` called only from tests with `StubCard` |
+| F1 | findings → `QualificationInput` loader | Qualification | **COMPLETED** | live | `qualification/loader.py`; Refokus scores 32.0/100 disqualified from its 13 persisted findings via an operator JWT |
+| F2 | Live scorecard persistence | Qualification | BLOCKED | — | `evaluator_type='agent'` must name the producing agent; persisting from a human session would misattribute. Needs a qualifier identity — `OW-1` |
 | F3 | Gate 2 approve/reject write path | Qualification | NOT_STARTED | — | `orchestration/workflow.py:52-59` models the gate; nothing writes `review_status` |
 | F4 | Scorecard repository contract | Qualification | COMPLETED | contract | 21 tests; draft-only, evidence-per-dimension, human-review preconditions |
 
@@ -112,7 +112,7 @@
 
 | ID | Item | Owner | Status | Grade | Evidence / blocker |
 |---|---|---|---|---|---|
-| H1 | One operator CLI covering G1–G3 | Operations | NOT_STARTED | — | four verbs under an agent package: `agents/researcher/operator_cli.py:152-176` |
+| H1 | One operator CLI covering G1–G3 | Operations | IN_PROGRESS | live | `operations/cli.py` covers G1 and a Gate 2 preview; G2 approval, G3 and G4 commands do not exist yet. The legacy script remains for research tasks |
 | H2 | Every refusal names the next action | Operations | NOT_STARTED | — | an uncaught `PostgrestError` is today's duplicate-domain behaviour |
 | H3 | Operator identity can sign in | Operations | COMPLETED | live | `OPERATOR_EMAIL`/`OPERATOR_PASSWORD`; user `e1cd1ff2-…`, `user_role=operator` |
 
@@ -148,7 +148,7 @@
 |---|---|---|---|---|---|
 | L1 | Lifecycle end-to-end run | QA | NOT_STARTED | — | depends on C4, D2, F1, G2 |
 | L2 | Metrics (precision, coverage, persistence, retries, latency) | QA | NOT_STARTED | — | all unknown |
-| M1 | Environment isolation proof in every entry point | QA | NOT_STARTED | — | only `contracts/environment.py` guards; no test drives a Production ref |
+| M1 | Environment isolation proof in every entry point | QA | **COMPLETED** | unit | `tests/test_environment_guard.py::test_the_operator_session_refuses_production_before_any_network_call` — the guard runs before sign-in, so no credential can reach Production |
 | M2 | Production readiness assessment | Orchestrator | NOT_STARTED | — | after L1 |
 | N1 | Portfolio claim consistency check | Brand | NOT_STARTED | — | analysis only (`docs/brand/eryndex-portfolio-analysis.md`) |
 | N2 | Build/deploy config in repo | Brand | NOT_STARTED | — | none tracked |

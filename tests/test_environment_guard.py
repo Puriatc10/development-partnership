@@ -72,3 +72,23 @@ def test_url_normalization_tolerates_trailing_slash_and_case():
 def test_missing_configuration_object_is_rejected():
     with pytest.raises(Exception):
         assert_development_environment(None)  # type: ignore[arg-type]
+
+
+def test_the_operator_session_refuses_production_before_any_network_call():
+    """The guard must run before sign-in, so no credential is ever sent to Production."""
+    from operations.session import open_session
+
+    # `operations.session.SupabaseAuthClient` is deliberately left unpatched: if the guard
+    # did not run first, this would attempt a real HTTP request.
+    with pytest.raises(Exception) as exc:
+        open_session(
+            {
+                "SUPABASE_PROJECT_REF": PRODUCTION_PROJECT_REF,
+                "SUPABASE_URL": f"https://{PRODUCTION_PROJECT_REF}.supabase.co",
+                "SUPABASE_ANON_KEY": "x",
+                "OPERATOR_EMAIL": "operator@partnership.internal",
+                "OPERATOR_PASSWORD": "not-a-real-password",
+            }
+        )
+    assert "Production" in str(exc.value)
+    assert "not-a-real-password" not in str(exc.value)
