@@ -281,9 +281,12 @@ class SupabaseCandidateSink:
                 message = str(exc)
                 if self._is_missing_table(message):
                     raise StagingUnavailable(
-                        "discovery_candidates is not deployed. Apply "
-                        "supabase/migrations/pending/*_discovery_candidates.sql first, or use "
-                        "JsonlOutboxSink for a local exercise."
+                        "discovery_candidates is not visible to this identity. The migration that "
+                        "creates it is applied in Development "
+                        "(supabase/migrations/20261115212728_discovery_candidates.sql), so this is "
+                        "either a missing table grant, a PostgREST schema-cache reload, or a "
+                        "different project — not a pending migration. Use JsonlOutboxSink only for "
+                        "an offline exercise."
                     ) from exc
                 constraint = self._constraint_from(message)
                 if not constraint:
