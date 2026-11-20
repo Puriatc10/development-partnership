@@ -13,6 +13,7 @@ Run: python scripts/rls_probe.py            (prints a matrix, exits non-zero on 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+
+from contracts.environment import EnvironmentConfig, assert_development_environment  # noqa: E402
+from contracts.errors import EnvironmentGuardError  # noqa: E402
+
 DEV_REF = "vyfqmrdznmocnmzyjjcj"
 PROD_REF = "vqnamszywsuqjxuqseas"
 
@@ -145,7 +151,7 @@ select count(*) as visible from discovery_candidates where discovered_by_agent_i
     ),
     Case(
         "G operator approves a pending candidate",
-        "allow",
+        'allow:"status": "approved"',
         "authenticated",
         OPERATOR,
         f"""
@@ -205,14 +211,56 @@ values ('Probe Co', 'probe co', 'probe-j.example.com', 'https://probe-j.example.
         "Discovery must never create CRM companies",
     ),
     Case(
-        "K operator reviews a candidate it cannot see is not possible (control)",
-        "allow",
+        "K operator can see the row it is about to review (control)",
+        'allow:"visible": 1',
         "authenticated",
         OPERATOR,
-        "select count(*) as visible from discovery_candidates;",
-        "control: the operator policy grants visibility",
+        f"""
+insert into discovery_candidates
+    (id, name, normalized_name, domain, source_name, status, batch_key, discovered_by_agent_identity)
+values ('{CANDIDATE}', 'Probe Co', 'probe co', 'probe-k.example.com', 'rls_probe', 'pending_review', 'probe-batch', '{AGENT_A}');
+select count(*) as visible from discovery_candidates where id = '{CANDIDATE}';
+""",
+        "control: the operator policy grants visibility of the row being reviewed",
     ),
 ]
+
+
+def assert_development_target() -> str:
+    """Refuse to run before any statement executes unless the linked project is Development.
+
+    The CLI resolves its target from ``supabase/.temp/project-ref``, which is mutable and
+    is what ``supabase link`` rewrites. Checking the *output* for the Production ref after
+    the fact is not a guard: by then the statement has already run against whatever was
+    linked. This runs first, and it is the only reason this script is safe to keep.
+    """
+    ref_file = REPO / "supabase" / ".temp" / "project-ref"
+    if not ref_file.exists():
+        raise SystemExit(
+            "refusing to run: no linked project recorded at supabase/.temp/project-ref. "
+            "Link the Development project first."
+        )
+    linked = ref_file.read_text(encoding="utf-8").strip()
+    if linked == PROD_REF:
+        raise SystemExit("refusing to run: the linked project is Production")
+    config = EnvironmentConfig(
+        project_ref=linked,
+        supabase_url=f"https://{linked}.supabase.co",
+        anon_key="unused-by-this-script",
+    )
+    try:
+        assert_development_environment(config)  # raises for anything but the approved Development ref
+    except EnvironmentGuardError as exc:
+        # A script should exit with a reason, not a traceback.
+        raise SystemExit(f"refusing to run: {exc}") from exc
+
+    env_ref = os.environ.get("SUPABASE_PROJECT_REF")
+    if env_ref and env_ref.strip() != linked:
+        raise SystemExit(
+            f"refusing to run: SUPABASE_PROJECT_REF ({env_ref.strip()}) and the linked project "
+            f"({linked}) disagree"
+        )
+    return linked
 
 
 #: The repo's CLI is an npm shim, so it must run in a POSIX shell — but this host's
@@ -244,12 +292,17 @@ def _run_sql(statement: str) -> tuple[bool, str]:
 
 
 def main() -> int:
+    linked = assert_development_target()
+    print(f"target verified: {linked} (Development)\n")
     failures = 0
     rows: list[tuple[str, str, str, bool]] = []
     for case in CASES:
         ok, output = _run_sql(_txn(case))
         if case.expect == "allow":
             passed = ok
+        elif case.expect.startswith("allow:"):
+            needle = case.expect.split(":", 1)[1]
+            passed = ok and needle in output.replace("\n", " ")
         elif case.expect == "0":
             passed = ok and '"visible": 0' in output.replace("\n", " ")
         elif case.expect.startswith("unchanged:"):

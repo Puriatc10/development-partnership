@@ -90,7 +90,7 @@ What this does **not** prove: real JWT issuance and PostgREST filter/representat
 
 ```
 python -m pytest                      411 passed, 6 skipped   (417 collected)
-python -m pytest tests/test_operations_gate1.py   17 passed
+python -m pytest tests/test_operations_gate1.py   15 passed
 ```
 
 The 6 skips are the `ERYNDEX_DB_URL` policy suite, unchanged. New coverage in `tests/test_operations_gate1.py` models the review-pair constraint, `companies.primary_domain` uniqueness and `company_domains.domain` uniqueness inside the fake client, so a test cannot pass by ignoring a rule the database enforces. Segment absence fails closed; an agent identity cannot open a session; a missing configuration names variables and never values.
@@ -118,3 +118,28 @@ Left in place deliberately: the directive forbids destructive cleanup without an
 ## 8. Compliance
 
 No migration applied or edited, no SQL executed outside `BEGIN … ROLLBACK` probes and the two fixture inserts the directive's "controlled synthetic batch" allows, no Production contact, no Auth identity created, no `service_role`, no RLS or grant change, no Outreach dispatch, no Discovery provider run, no Docker operation.
+
+## 9. Addendum — findings from the independent audit, and what changed
+
+The two auditors that ran after this report was written found four blocking defects in the
+code described above. All four are fixed; the details are in
+`reports/eryndex/FINAL_PLATFORM_AUDIT.md` §2. Two of them correct claims made earlier in this
+document, so they are named here rather than quietly amended:
+
+- **Case G was unfalsifiable.** It asserted only that the statement exited zero. Because RLS
+  filters `UPDATE` rows instead of raising, dropping the operator policy would have left the
+  case green. It now asserts `"status": "approved"` from the returned row, and the control
+  case asserts a visible row count.
+- **`--remove` could delete a real company.** It followed `converted_company_id` without
+  checking provenance. It now requires `discovery_source='discovery_candidate'` and a matching
+  `discovery_details.candidate_id`, deletes the company first, and re-reads to confirm absence.
+- **An unapproved candidate could report itself registered.** `link_company` had no state
+  precondition and `register_candidate` short-circuited on `converted_company_id` before
+  checking status. Both are now gated on `approved` + a recorded reviewer.
+- **The probe had no pre-flight environment guard.** It inspected the CLI output for the
+  Production ref *after* executing. It now refuses before running anything.
+
+Re-verified live after the fixes: a pending candidate is refused registration with exit 2;
+the approved candidate still reports "already registered" with nothing created; the policy
+probe is **11/11** against the guarded script; full suite **448 collected → 442 passed,
+6 skipped**.

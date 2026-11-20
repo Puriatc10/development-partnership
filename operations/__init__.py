@@ -19,6 +19,7 @@ from .candidates import (
     link_company,
     list_candidates,
     list_evidence,
+    mark_conflict,
     mark_duplicate,
     reject_candidate,
 )
@@ -43,6 +44,7 @@ __all__ = [
     "link_company",
     "list_candidates",
     "list_evidence",
+    "mark_conflict",
     "mark_duplicate",
     "open_session",
     "register_candidate",

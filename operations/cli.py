@@ -20,7 +20,11 @@ import json
 import sys
 from typing import Any, Mapping, Sequence
 
+import requests
+
+from contracts.errors import EnvironmentGuardError
 from integrations.supabase.client import PostgrestError
+from qualification.loader import QualificationInputError
 
 from . import candidates as gate1
 from .registration import register_candidate
@@ -37,6 +41,18 @@ def _print_json(payload: Any) -> None:
 
 def _want_json(args: argparse.Namespace) -> bool:
     return bool(getattr(args, "json", False))
+
+
+_CONTROL = {code: None for code in list(range(0x00, 0x20)) + [0x7F]}
+
+
+def _safe(value: Any) -> str:
+    """Strip control characters from any value an operator will see on a terminal.
+
+    Agent-authored text (candidate names, evidence excerpts) is untrusted input; an ESC
+    sequence could otherwise redraw the lines that report status or reviewer.
+    """
+    return str(value if value is not None else "").translate(_CONTROL)
 
 
 def _table(rows: Sequence[Mapping[str, Any]], columns: Sequence[tuple[str, str]]) -> str:
@@ -113,8 +129,8 @@ def _cmd_candidates_show(session: Any, args: argparse.Namespace) -> int:
         print(f"  {key:32}: {candidate.get(key)}")
     print(f"  evidence ({len(evidence)}):")
     for row in evidence:
-        excerpt = str(row.get("excerpt") or "").strip().replace("\n", " ")
-        print(f"    - {row.get('url')} [{row.get('provider')}] {excerpt[:140]}")
+        excerpt = _safe(row.get("excerpt")).strip()
+        print(f"    - {_safe(row.get('url'))} [{_safe(row.get('provider'))}] {excerpt[:140]}")
     if str(candidate.get("status")) == gate1.PENDING:
         print("\nnext: `candidates approve <id>` or `candidates reject <id> --reason ...`")
     elif str(candidate.get("status")) == gate1.APPROVED:
@@ -277,6 +293,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         return int(args.func(session, args))
     except gate1.Gate1Error as exc:
         print(f"refused: {exc}", file=sys.stderr)
+        return 2
+    except QualificationInputError as exc:
+        print(f"cannot qualify: {exc}", file=sys.stderr)
+        return 2
+    except EnvironmentGuardError as exc:
+        print(f"environment refused: {exc}", file=sys.stderr)
+        return 2
+    except requests.RequestException as exc:
+        print(
+            f"network failure talking to Supabase ({exc.__class__.__name__}); the action may or may "
+            "not have been applied — re-run the same command, it is idempotent.",
+            file=sys.stderr,
+        )
         return 2
     except PostgrestError as exc:
         detail = f"{exc.code}: {exc.message}" if exc.code else str(exc)

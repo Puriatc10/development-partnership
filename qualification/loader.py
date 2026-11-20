@@ -30,6 +30,17 @@ FINDING_SELECT = (
 )
 
 
+#: PostgREST caps a response at the project's ``db-max-rows`` (1000 by default), so an
+#: unpaged read silently truncates the evidence set — which can drop the very finding that
+#: would fire a disqualifier. Every list read here pages until exhausted.
+PAGE_SIZE = 1000
+
+#: A verified fact must cite a fetchable source. ``research_findings`` has no format check
+#: (unlike ``discovery_candidate_evidence.chk_candidate_evidence_url``), so a scorecard
+#: could otherwise cite "see attached email" or a ``javascript:`` URL.
+CITABLE_SCHEMES = ("http://", "https://")
+
+
 class QualificationInputError(RuntimeError):
     """The company's persisted research cannot be turned into a scoreable input."""
 
@@ -43,6 +54,30 @@ class ResearchEvidence:
     @property
     def finding_ids(self) -> tuple[str, ...]:
         return tuple(str(row["id"]) for row in self.findings)
+
+
+def _get_all(client: Any, table: str, params: Mapping[str, Any], *, page_size: int | None = None) -> list[dict]:
+    """Read every matching row, paging by ``limit``/``offset``.
+
+    A truncated read is worse than a failed one: the scorecard would look complete while
+    being computed from a subset of the evidence.
+    """
+    # Read the page size at call time, not at import: a default argument would freeze it
+    # and make the paging behaviour untestable.
+    size = PAGE_SIZE if page_size is None else page_size
+    rows: list[dict] = []
+    offset = 0
+    while True:
+        page = list(
+            client.get(
+                table,
+                {**params, "limit": str(size), "offset": str(offset)},
+            )
+        )
+        rows.extend(page)
+        if len(page) < size:
+            return rows
+        offset += size
 
 
 def load_company(client: Any, company_id: str) -> Mapping[str, Any]:
@@ -81,7 +116,13 @@ def load_evidence(client: Any, company_id: str) -> ResearchEvidence:
             f"company {company_id!r} has no research report; run research before qualification"
         )
     report = reports[0]
-    findings = client.get(
+    if str(report.get("overall_confidence") or "") == "unverified":
+        raise QualificationInputError(
+            f"the research report for company {company_id!r} is marked unverified; scoring it "
+            "would present an estimate as a measurement (ADR-0006)"
+        )
+    findings = _get_all(
+        client,
         FINDINGS,
         {
             "select": FINDING_SELECT,
@@ -103,6 +144,16 @@ def findings_from_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[Finding, ...]
                 f"research_findings row {row.get('id')!r} is missing {missing}; refusing to score "
                 "evidence that cannot be cited"
             )
+        url = str(row["evidence_url"]).strip() if row.get("evidence_url") else ""
+        if url and not url.lower().startswith(CITABLE_SCHEMES):
+            raise QualificationInputError(
+                f"research_findings row {row['id']!r} cites {url!r}, which is not a fetchable "
+                f"http(s) source; a verified fact must cite something a reviewer can open"
+            )
+        if str(row.get("finding_type")) == "verified_fact" and not url:
+            raise QualificationInputError(
+                f"research_findings row {row['id']!r} is a verified fact with no source URL"
+            )
         mapped.append(
             Finding(
                 finding_id=str(row["id"]),
@@ -121,10 +172,13 @@ def build_input(evidence: ResearchEvidence) -> QualificationInput:
     company = evidence.company
     headcount: int | None = None
     # A directory range is an estimate, never a verified count (rubric: medium confidence).
-    if company.get("headcount_min") is not None:
-        headcount = int(company["headcount_min"])
-    elif company.get("headcount_max") is not None:
-        headcount = int(company["headcount_max"])
+    # Zero is schema-legal but the engine requires a positive headcount, so it means
+    # "unknown", not "empty company".
+    for key in ("headcount_min", "headcount_max"):
+        value = company.get(key)
+        if value is not None and int(value) > 0:
+            headcount = int(value)
+            break
     return QualificationInput(
         findings=findings_from_rows(evidence.findings),
         segment=str(company.get("primary_segment") or "") or None,

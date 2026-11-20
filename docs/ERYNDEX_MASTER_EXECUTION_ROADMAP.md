@@ -41,15 +41,15 @@ Measured, not claimed. Evidence column names the artefact that proves it.
 | Hardening H-01…H-05 | **applied** (fix present in the deployed migration); **not verified by execution** | `20261114194622:38-222`; the six tests that would prove it are skipped (`tests/db/test_security_fixes_db.py:31-33`) |
 | IPP v2 engine | **code-complete + unit-tested on real data** | `intelligence/ipp/` (45 tests); calibration 32/100 at 0.714 coverage, `ipp-calibration.md` |
 | Discovery staging write path | **code-complete, contract-tested only** | `discovery/ports.py:229-543`; 71 discovery tests; never executed against PostgREST |
-| Human Gate 1 (candidate → company) | **absent** | no review code anywhere; `register_company` writes `companies` blindly (`agents/researcher/operator_cli.py:46-74`) |
+| Human Gate 1 (candidate → company) | **absent at mission start; now implemented and live** | mission start: no review code, `register_company` wrote `companies` blindly. Now: `operations/` + `reports/eryndex/stage-2-discovery-gate1.md` §3 |
 | Research execution | **absent** | `run_researcher_vertical_slice` receives the research as arguments (`agents/researcher/runner.py:135-144`); nothing produces it |
 | Provider adapters (Crawl4AI, GPT Researcher, OpenGTM) | **contract-tested, zero live runs** | `integration-verification.md:6`; adapters imported only by tests |
-| Qualification persistence | **code-complete, no production caller** | `integrations/supabase/qualification_repository.py:137`; called only from `tests/` |
+| Qualification persistence | **code-complete; still no production caller** | `integrations/supabase/qualification_repository.py:137`; the read side now works live (`qualification/loader.py`), the write side needs a qualifier identity (OW-1) |
 | Outreach drafting gate | **code-complete, 134 tests, no production wiring** | `outreach/gate.py:625,903`; no `DraftWriter`/`SuppressionReader` implementation outside tests |
 | Dispatch | **unreachable by construction** | `outreach/dispatch.py:22,33-75`; DB trigger `20261107174129:1062` |
 | Runtime / TaskSource abstraction | **documentation only** | snippet at `docs/architecture/eryndex-target-architecture.md:71-75`; zero `.py` hits |
 | Observability | **absent** | no run/trace id persisted; `audit_logs` has no correlation columns (`20261107174129:782-793`) |
-| Test suite | **402 collected / 396 passed / 6 skipped / 0 failed** | `pytest -q`; skips all from the `ERYNDEX_DB_URL` guard |
+| Test suite | **448 collected / 442 passed / 6 skipped / 0 failed** (402 / 396 at mission start) | `pytest -q`; skips all from the `ERYNDEX_DB_URL` guard |
 
 Two facts that decide the execution order:
 

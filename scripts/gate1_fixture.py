@@ -27,6 +27,7 @@ from integrations.supabase.client import PostgrestError  # noqa: E402
 from operations.session import OperatorSessionError, open_session  # noqa: E402
 
 SOURCE_NAME = "synthetic_fixture"
+SYNTHETIC_IDENTITY = "synthetic-fixture"
 NAME_PREFIX = "[SYNTHETIC]"
 RESERVED_SUFFIX = ".example.com"
 CANDIDATES = "discovery_candidates"
@@ -47,7 +48,9 @@ def create(session, name: str, domain: str, segment: str, excerpt: str | None) -
         "signals": {"segment": segment, "fixture": True},
         "status": "pending_review",
         "batch_key": f"synthetic-fixture-{datetime.now(timezone.utc):%Y%m%d%H%M%S}",
-        "discovered_by_agent_identity": "hermes-discovery-v1",
+        # Not the discovery agent's identity: this row was created by a human to exercise
+        # Gate 1, and the registration payload copies this value into the company record.
+        "discovered_by_agent_identity": SYNTHETIC_IDENTITY,
     }
     rows = session.client.post(CANDIDATES, payload)
     if not rows:
@@ -86,10 +89,38 @@ def remove(session, candidate_id: str) -> dict:
             f"source_name must be {SOURCE_NAME!r}); nothing was deleted"
         )
     company_id = row.get("converted_company_id")
-    session.client.delete(CANDIDATES, {"id": f"eq.{candidate_id}"})
     if company_id:
+        companies = session.client.get(
+            COMPANIES,
+            {"select": "id,name,discovery_source,discovery_details", "id": f"eq.{company_id}"},
+        )
+        if not companies:
+            raise SystemExit(f"company {company_id} is not visible; nothing was deleted")
+        company = companies[0]
+        details = company.get("discovery_details") or {}
+        linked = str(details.get("candidate_id") or "")
+        if company.get("discovery_source") != "discovery_candidate" or linked != candidate_id:
+            raise SystemExit(
+                f"refused: company {company_id} was not created from this candidate "
+                f"(source={company.get('discovery_source')!r}, candidate_id={linked!r}); "
+                "nothing was deleted"
+            )
+        # Company first: the candidate references it ON DELETE SET NULL, so deleting the
+        # candidate first would leave an orphaned company with no record of why it exists.
         session.client.delete(COMPANIES, {"id": f"eq.{company_id}"})
-    return {"candidate": candidate_id, "company": company_id}
+
+    session.client.delete(CANDIDATES, {"id": f"eq.{candidate_id}"})
+
+    still_candidates = session.client.get(CANDIDATES, {"select": "id", "id": f"eq.{candidate_id}"})
+    still_companies = (
+        session.client.get(COMPANIES, {"select": "id", "id": f"eq.{company_id}"}) if company_id else []
+    )
+    if still_candidates or still_companies:
+        raise SystemExit(
+            "deletion did not complete: candidate visible after delete="
+            f"{bool(still_candidates)}, company visible after delete={bool(still_companies)}"
+        )
+    return {"candidate": candidate_id, "company": company_id, "verified_absent": True}
 
 
 def main(argv: list[str] | None = None) -> int:

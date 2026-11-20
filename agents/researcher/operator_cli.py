@@ -15,8 +15,16 @@ import sys
 from typing import Any, Dict, Optional
 
 from .auth import SupabaseAuthClient
+from contracts.environment import EnvironmentConfig, assert_development_environment
+
 from .client import PostgrestClient
 from .config import Config
+
+
+def _ref_from_url(url: str) -> str:
+    """Extract ``<ref>`` from ``https://<ref>.supabase.co`` without echoing the URL."""
+    host = url.split("://", 1)[-1].split("/", 1)[0]
+    return host.split(".", 1)[0]
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger("operator.cli")
@@ -28,6 +36,15 @@ def get_operator_client(
     email: str,
     password: str,
 ) -> PostgrestClient:
+    # The legacy CLI had no environment guard, so it could be pointed anywhere by env vars.
+    assert_development_environment(
+        EnvironmentConfig(
+            project_ref=_ref_from_url(supabase_url),
+            supabase_url=supabase_url,
+            anon_key=anon_key,
+        )
+    )
+
     auth_client = SupabaseAuthClient(supabase_url, anon_key)
     auth_result = auth_client.sign_in_with_password(email, password)
     claims = auth_result["claims"]
@@ -51,10 +68,33 @@ def register_company(
     segment: str = "webflow_studio",
     discovery_source: str = "operator_registration",
 ) -> Dict[str, Any]:
+    """Legacy direct registration.
+
+    Kept for companies that arrive outside Discovery, but it now refuses anything the CRM
+    already holds: a blind insert on a domain that exists as *another* company's secondary
+    domain would be re-parented by ``fn_sync_company_primary_domain`` and corrupt the table
+    that suppression and dedupe both read. New work should use Human Gate 1
+    (``python -m operations.cli candidates register``).
+    """
     norm_name = name.strip().lower()
     norm_domain = primary_domain.strip().lower().replace("https://", "").replace("http://", "").strip("/")
     if not website_url:
         website_url = f"https://{norm_domain}"
+
+    existing = client.get("companies", {"select": "id,name", "primary_domain": f"eq.{norm_domain}"})
+    if existing:
+        raise PermissionError(
+            f"'{norm_domain}' is already company {existing[0]['id']} ({existing[0]['name']}); "
+            "refusing to create a second record. Use `python -m operations.cli candidates register` "
+            "for candidates, or inspect that company."
+        )
+    claimed = client.get("company_domains", {"select": "company_id,domain", "domain": f"eq.{norm_domain}"})
+    if claimed:
+        raise PermissionError(
+            f"'{norm_domain}' is already registered to company {claimed[0]['company_id']} as one of "
+            "its domains; re-parenting it would corrupt domain ownership. Register it on that "
+            "company instead."
+        )
 
     payload = {
         "name": name.strip(),

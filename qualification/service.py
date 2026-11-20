@@ -46,12 +46,16 @@ def qualify_company(
         return QualificationResult(company_id, scorecard, evidence, None)
 
     repository = QualificationRepository(client, agent_identity=agent_identity)
-    existing = repository.existing_draft(company_id)
-    row = repository.persist_draft(company_id, scorecard)
+    outcome = repository.persist_draft(company_id, scorecard)
+    # ``persist_draft`` reports whether it wrote or matched an identical draft; deriving
+    # "reused" from a pre-read would call a fresh write reused whenever any older draft
+    # happened to exist.
+    reused = isinstance(outcome, dict) and outcome.get("status") == "already_executed"
+    row = outcome.get("record") if isinstance(outcome, dict) else outcome
     return QualificationResult(
         company_id=company_id,
         scorecard=scorecard,
         evidence=evidence,
         persisted=row,
-        reused=existing is not None,
+        reused=reused,
     )

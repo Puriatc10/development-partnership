@@ -138,11 +138,11 @@ def test_approval_records_the_reviewer_and_timestamp():
 def test_approval_is_idempotent_and_keeps_the_original_reviewer():
     client = FakeClient(candidates=[candidate()])
     first = gate1.approve_candidate(client, CANDIDATE_ID, operator_id=OPERATOR_ID)
-    stamps = [c for c in client.calls if c[0] == "PATCH"]
+    patches_before = [c for c in client.calls if c[0] == "PATCH"]
     second = gate1.approve_candidate(client, CANDIDATE_ID, operator_id="someone-else")
     assert second["reviewed_at"] == first["reviewed_at"]
     assert second["reviewed_by_human_id"] == OPERATOR_ID, "a repeat must not rewrite the reviewer"
-    assert len(stamps) == len([c for c in client.calls if c[0] == "PATCH"])
+    assert len(patches_before) == 1, "a repeat must not issue a second write"
 
 
 def test_a_rejected_candidate_cannot_be_approved():
@@ -332,3 +332,73 @@ def test_a_missing_operator_configuration_names_the_variables_only():
         open_session(env)
     assert "OPERATOR_PASSWORD" in str(exc.value)
     assert "secret" not in str(exc.value)
+
+
+# --- regressions from the independent adversarial review -------------------
+
+
+def test_link_company_refuses_a_candidate_that_was_never_approved():
+    """A company may not be linked to an unreviewed candidate.
+
+    Without this, a pending row could carry converted_company_id while still shadowing its
+    domain, and register_candidate would later report it as "already registered".
+    """
+    client = FakeClient(candidates=[candidate()])
+    with pytest.raises(Gate1Error) as exc:
+        gate1.link_company(client, CANDIDATE_ID, company_id="company-1")
+    assert "only an approved candidate" in str(exc.value)
+    assert client.candidates[0]["converted_company_id"] is None
+
+
+def test_registration_refuses_a_link_on_an_unreviewed_candidate():
+    client = FakeClient(
+        candidates=[candidate(converted_company_id="company-1")],
+        companies=[{"id": "company-1", "name": "Alpha", "primary_domain": "alpha.example.com",
+                    "lifecycle_stage": "identified", "qualification_tier": None}],
+    )
+    with pytest.raises(Gate1Error) as exc:
+        register_candidate(client, CANDIDATE_ID, operator_id=OPERATOR_ID)
+    assert "inconsistent row" in str(exc.value)
+
+
+def test_registration_refuses_when_the_approval_names_no_reviewer():
+    client = FakeClient(
+        candidates=[candidate(status="approved", reviewed_by_human_id=None, reviewed_at=None)]
+    )
+    with pytest.raises(Gate1Error) as exc:
+        register_candidate(client, CANDIDATE_ID, operator_id=OPERATOR_ID)
+    assert "reviewer" in str(exc.value)
+    assert client.companies == []
+
+
+def test_a_name_match_on_a_different_domain_is_a_conflict_not_a_duplicate():
+    client = FakeClient(
+        candidates=[candidate(status="approved", reviewed_by_human_id=OPERATOR_ID,
+                              reviewed_at="2026-11-20T11:00:00+00:00")],
+        companies=[
+            {
+                "id": "company-named",
+                "name": "Alpha Studio",
+                "normalized_name": normalize_name("Alpha Studio"),
+                "primary_domain": "alpha-studio.example.com",
+                "lifecycle_stage": "identified",
+                "qualification_tier": None,
+            }
+        ],
+    )
+    result = register_candidate(client, CANDIDATE_ID, operator_id=OPERATOR_ID)
+    assert result.created is False and result.duplicate is False
+    assert result.candidate["status"] == "conflict"
+    assert "name matches company company-named" in result.candidate["review_notes"]
+    assert len(client.companies) == 1
+
+
+def test_provenance_records_the_reviewer_not_the_registering_operator():
+    reviewer = "reviewer-human-2222"
+    client = FakeClient(
+        candidates=[candidate(status="approved", reviewed_by_human_id=reviewer,
+                              reviewed_at="2026-11-20T11:00:00+00:00")]
+    )
+    result = register_candidate(client, CANDIDATE_ID, operator_id=OPERATOR_ID, segment="digital_agency")
+    assert result.company["discovery_details"]["reviewed_by"] == reviewer
+    assert result.company["discovery_details"]["registration_operator"] == OPERATOR_ID

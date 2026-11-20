@@ -26,7 +26,7 @@
 |---|---|---|
 | Branch / HEAD | `main` @ `447dc94` | `git rev-parse HEAD` |
 | Tracked files | 154 | `git ls-files \| wc -l` |
-| Full suite | **428 collected / 422 passed / 6 skipped / 0 failed** | `pytest -q` |
+| Full suite | **448 collected / 442 passed / 6 skipped / 0 failed** (402 / 396 at mission start) | `pytest -q` |
 | Skipped | all six in `tests/db/`, `ERYNDEX_DB_URL` unset | `tests/db/test_security_fixes_db.py:31-33` |
 | Python LOC | 13,647 | `wc -l` over the eight packages |
 | Migrations applied | `20261107174129`, `20261114194622`, `20261115212728` | remote `supabase_migrations.schema_migrations` |
@@ -148,7 +148,7 @@
 |---|---|---|---|---|---|
 | L1 | Lifecycle end-to-end run | QA | NOT_STARTED | — | depends on C4, D2, F1, G2 |
 | L2 | Metrics (precision, coverage, persistence, retries, latency) | QA | NOT_STARTED | — | all unknown |
-| M1 | Environment isolation proof in every entry point | QA | **COMPLETED** | unit | `tests/test_environment_guard.py::test_the_operator_session_refuses_production_before_any_network_call` — the guard runs before sign-in, so no credential can reach Production |
+| M1 | Environment isolation proof in entry points | QA | IN_REVIEW | unit | operator session (tested, guard runs before sign-in), `scripts/rls_probe.py` (tested pre-flight), legacy `operator_cli` (guarded, untested), runner (guarded). `scripts/discovery_cycle.py` is offline and needs none |
 | M2 | Production readiness assessment | Orchestrator | NOT_STARTED | — | after L1 |
 | N1 | Portfolio claim consistency check | Brand | NOT_STARTED | — | analysis only (`docs/brand/eryndex-portfolio-analysis.md`) |
 | N2 | Build/deploy config in repo | Brand | NOT_STARTED | — | none tracked |

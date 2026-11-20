@@ -85,7 +85,9 @@ class FakeClient:
                 for r in self.findings
                 if not report_filter or report_filter == f"eq.{r['report_id']}"
             ]
-            return rows
+            offset = int(params.get("offset") or 0)
+            limit = int(params.get("limit") or 0)
+            return rows[offset : offset + limit] if limit else rows[offset:]
         if table == "lead_qualifications":
             return []
         raise AssertionError(f"unexpected GET {table}")
@@ -177,3 +179,60 @@ def test_thin_evidence_is_refused_at_persist_rather_than_written_as_a_zero():
         qualify_company(client, COMPANY_ID, agent_identity="hermes-qualifier-v1")
     assert "inconclusive" in str(exc.value)
     assert not client.posted, "an unmeasured company must not gain a scorecard row"
+
+
+# --- regressions from the independent adversarial review -------------------
+
+
+def test_a_non_http_source_is_refused():
+    """research_findings has no URL check of its own, so the loader is the only guard."""
+    client = FakeClient(
+        findings=[dict(finding(evidence_url="javascript:void(0)"))]
+    )
+    with pytest.raises(QualificationInputError) as exc:
+        findings_from_rows(client.findings)
+    assert "not a fetchable" in str(exc.value)
+
+
+def test_a_verified_fact_without_a_source_is_refused():
+    with pytest.raises(QualificationInputError) as exc:
+        findings_from_rows([finding(evidence_url=None)])
+    assert "verified fact with no source URL" in str(exc.value)
+
+
+def test_findings_are_paged_rather_than_silently_truncated(monkeypatch):
+    """PostgREST caps a response; an unpaged read would score a subset of the evidence."""
+    import qualification.loader as loader
+
+    many = [
+        finding(id=f"f{i:03d}", category="technology_stack",
+                statement=f"Fact {i}", evidence_url=f"https://alpha.example.com/{i}")
+        for i in range(5)
+    ]
+    client = FakeClient(findings=many)
+    monkeypatch.setattr(loader, "PAGE_SIZE", 2)
+    evidence = loader.load_evidence(client, COMPANY_ID)
+    assert len(evidence.findings) == 5, "every page must be read"
+    pages = [c for c in client.calls if c[0] == "GET" and c[1] == "research_findings"]
+    assert len(pages) == 3, "2 + 2 + 1"
+    assert [p[2]["offset"] for p in pages] == ["0", "2", "4"]
+
+
+def test_a_zero_headcount_means_unknown_not_empty():
+    client = FakeClient(
+        company={
+            "id": COMPANY_ID, "name": "Alpha Studio", "primary_domain": "alpha.example.com",
+            "primary_segment": "webflow_studio", "headcount_min": 0, "headcount_max": None,
+            "country": "United Kingdom", "lifecycle_stage": "identified",
+        }
+    )
+    payload = build_input(load_evidence(client, COMPANY_ID))
+    assert payload.employee_estimate is None
+
+
+def test_an_unverified_report_is_not_scored():
+    client = FakeClient()
+    client.reports[0]["overall_confidence"] = "unverified"
+    with pytest.raises(QualificationInputError) as exc:
+        score_company(client, COMPANY_ID)
+    assert "unverified" in str(exc.value)

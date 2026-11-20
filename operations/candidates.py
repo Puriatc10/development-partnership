@@ -128,11 +128,18 @@ def _review(
         params={"id": f"eq.{candidate_id}", "status": f"eq.{current}"},
     )
     if not updated:
-        # The filter included the old status, so an empty result means the row moved
-        # underneath us. Re-read rather than assuming the write happened.
+        # The filter included the old status. Re-read to tell the two possible causes
+        # apart: the row moved underneath us, or this identity was never allowed to
+        # update it and RLS filtered it to zero rows (which raises nothing).
         after = get_candidate(client, candidate_id)
         if str(after.get("status")) == status:
             return after
+        if str(after.get("status")) == current:
+            raise Gate1Error(
+                f"the review of {candidate_id!r} was refused: the row is still {current!r}, so no "
+                "row was visible for update. This identity is not permitted to review candidates "
+                "(the policy requires a human operator and the row must stay unchanged for agents)."
+            )
         raise Gate1Error(
             f"candidate {candidate_id!r} changed while being reviewed (now "
             f"{after.get('status')!r}); no review was recorded"
@@ -142,6 +149,12 @@ def _review(
         raise Gate1Error(
             f"the review of {candidate_id!r} did not persist as requested "
             f"(status={row.get('status')!r}, reviewer={row.get('reviewed_by_human_id')!r})"
+        )
+    if str(row["reviewed_by_human_id"]) != str(operator_id):
+        raise Gate1Error(
+            f"the review of {candidate_id!r} was recorded against "
+            f"{row['reviewed_by_human_id']!r}, not the operator who signed in "
+            f"({operator_id!r}); refusing to treat that as this operator's decision"
         )
     return row
 
@@ -218,12 +231,68 @@ def mark_duplicate(
     return row
 
 
+def mark_conflict(
+    client: Any,
+    candidate_id: str,
+    *,
+    operator_id: str,
+    note: str,
+    company_id: str | None = None,
+) -> Mapping[str, Any]:
+    """Record that the candidate's name matches one company while its domain matches another.
+
+    The schema has a ``conflict`` status for exactly this case. It is a decision the
+    operator is told about, not a duplicate silently absorbed.
+    """
+    if not note or not note.strip():
+        raise Gate1Error("a conflict must state which company the name matched")
+    candidate = get_candidate(client, candidate_id)
+    if str(candidate.get("status")) == CONFLICT:
+        return candidate
+    if str(candidate.get("status")) not in (PENDING, APPROVED):
+        raise Gate1Error(
+            f"candidate {candidate_id!r} is {candidate.get('status')!r}; only a pending or "
+            "approved candidate can be marked conflict"
+        )
+    payload: dict[str, Any] = {
+        "status": CONFLICT,
+        "reviewed_by_human_id": operator_id,
+        "reviewed_at": _now(),
+        "review_notes": note.strip(),
+    }
+    if company_id:
+        payload["converted_company_id"] = company_id
+    updated = client.patch(CANDIDATE_TABLE, payload, params={"id": f"eq.{candidate_id}"})
+    row = _single(updated, f"candidate {candidate_id!r}")
+    if str(row.get("status")) != CONFLICT:
+        raise Gate1Error(f"marking {candidate_id!r} conflict did not persist")
+    return row
+
+
 def link_company(client: Any, candidate_id: str, *, company_id: str) -> Mapping[str, Any]:
-    """Attach the created company to its candidate, closing the Gate 1 trail."""
+    """Attach the created company to its candidate, closing the Gate 1 trail.
+
+    Only an approved, reviewed candidate may be linked. Without that precondition a
+    pending row could carry ``converted_company_id`` while still shadowing its domain and
+    still unreviewed, and ``register_candidate`` would later report it as "already
+    registered" — conversion without approval.
+    """
+    candidate = get_candidate(client, candidate_id)
+    status = str(candidate.get("status"))
+    if status not in (APPROVED, DUPLICATE):
+        raise Gate1Error(
+            f"candidate {candidate_id!r} is {status!r}; only an approved candidate may be linked "
+            f"to a company. Approve it first: `candidates approve {candidate_id}`."
+        )
+    if not candidate.get("reviewed_by_human_id"):
+        raise Gate1Error(
+            f"candidate {candidate_id!r} has no reviewer recorded; a company may not be linked to "
+            "an unreviewed candidate"
+        )
     updated = client.patch(
         CANDIDATE_TABLE,
         {"converted_company_id": company_id},
-        params={"id": f"eq.{candidate_id}"},
+        params={"id": f"eq.{candidate_id}", "status": f"eq.{status}"},
     )
     row = _single(updated, f"candidate {candidate_id!r}")
     if str(row.get("converted_company_id") or "") != company_id:
