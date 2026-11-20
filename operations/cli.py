@@ -175,6 +175,50 @@ def _cmd_candidates_register(session: Any, args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_qualify(session: Any, args: argparse.Namespace) -> int:
+    """Score a company from its own persisted research, as a preview.
+
+    The draft is not persisted from an operator session: a scorecard's ``evaluator_type``
+    is ``agent`` and must name the agent that produced it, so writing one here would
+    attribute the engine's output to the wrong identity. Persistence needs a qualifier
+    agent identity (roadmap OW-1).
+    """
+    from qualification.service import qualify_company
+
+    result = qualify_company(session.client, args.company_id, agent_identity="preview", persist=False)
+    card = result.scorecard
+    if _want_json(args):
+        _print_json(
+            {
+                "company": result.evidence.company.get("name"),
+                "total_score": card.total_score,
+                "tier": card.tier,
+                "tier_label": card.tier_label,
+                "evidence_coverage": card.evidence_coverage,
+                "insufficient_evidence": card.insufficient_evidence,
+                "findings": list(result.evidence.finding_ids),
+                "dimensions": [
+                    {
+                        "key": d.key,
+                        "points": d.points_awarded,
+                        "max_points": d.max_points,
+                        "confidence": d.confidence,
+                    }
+                    for d in card.dimensions
+                ],
+            }
+        )
+        return 0
+    print(f"{result.evidence.company.get('name')} — {card.total_score}/100 ({card.tier}) {card.tier_label}")
+    print(f"  coverage {card.evidence_coverage:.3f} · {len(result.evidence.findings)} findings · "
+          f"insufficient_evidence={card.insufficient_evidence}")
+    for dimension in card.dimensions:
+        print(f"  {dimension.key:26} {dimension.points_awarded:>5}/{dimension.max_points:<3} {dimension.confidence}")
+    print("\nnot persisted: a draft must name the agent that produced it, and this session is a "
+          "human operator. Persistence requires a qualifier agent identity (OW-1).")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m operations.cli",
@@ -212,6 +256,10 @@ def build_parser() -> argparse.ArgumentParser:
     register.add_argument("--segment", default=None, help="market_segment_type value")
     register.add_argument("--website", default=None)
     register.set_defaults(func=_cmd_candidates_register)
+
+    qualify = sub.add_parser("qualify", help="score a company from its persisted research (preview)")
+    qualify.add_argument("company_id")
+    qualify.set_defaults(func=_cmd_qualify)
 
     parser.set_defaults(func=_cmd_whoami)
     return parser
