@@ -1,0 +1,53 @@
+{
+  "captured_at_utc": "2026-11-14T10:30:32Z",
+  "note": "No HTTP response exists. The adapter's single POST /crawl never reached a server: TCP connect to 127.0.0.1:11235 was refused (nothing listening). This file records the exact request the adapter emitted and the exact error it received, so the absence of a body is auditable rather than inferred.",
+  "request": {
+    "method": "POST",
+    "url": "http://127.0.0.1:11235/crawl",
+    "headers": {
+      "Accept": "application/json",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "urls": [
+        "https://example.com/"
+      ],
+      "crawler_config": {
+        "cache_mode": "ENABLED"
+      }
+    },
+    "transport_timeout_s": 60.0
+  },
+  "response": {
+    "http_status": null,
+    "headers": null,
+    "body": null,
+    "body_chars": 0,
+    "body_head_5000": ""
+  },
+  "transport": {
+    "exception_type": "TransportUnavailable",
+    "elapsed_ms": 2016,
+    "detail": "HTTPConnectionPool(host='127.0.0.1', port=11235): Max retries exceeded with url: /crawl (Caused by NewConnectionError(\"HTTPConnection(host='127.0.0.1', port=11235): Failed to establish a new connection: [WinError 10061] No connection could be made because the target machine actively refused it\"))"
+  },
+  "adapter_error": {
+    "raised": "contracts.errors.ProviderError",
+    "code": "unavailable",
+    "retryable": true,
+    "status_code": null,
+    "detail": "HTTPConnectionPool(host='127.0.0.1', port=11235): Max retries exceeded with url: /crawl (Caused by NewConnectionError(\"HTTPConnection(host='127.0.0.1', port=11235): Failed to establish a new connection: [WinError 10061] No connection could be made because the target machine actively refused it\"))"
+  },
+  "health_probe": {
+    "healthy": false,
+    "provider": "crawl4ai",
+    "detail": "unreachable: TransportUnavailable",
+    "checked_at": "2026-11-14T10:30:32+00:00",
+    "latency_ms": 2218
+  },
+  "adapter_metrics": {
+    "calls": 1,
+    "retries": 0,
+    "failures": 1
+  },
+  "port_evidence": "netstat -ano | grep 11235 -> no listener on 11235; curl 127.0.0.1:11235/health -> curl: (7) Failed to connect to 127.0.0.1 port 11235 after 2043 ms: Could not connect to server"
+}

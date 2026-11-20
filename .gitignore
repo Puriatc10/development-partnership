@@ -11,6 +11,13 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Local virtualenv (recreate with: uv venv .venv && uv pip install -r requirements.txt)
+.venv/
+venv/
+
+# Local logical backups of the Development CRM (never commit business data)
+backups/
+
 # Operating System Files
 .DS_Store
 Thumbs.db
