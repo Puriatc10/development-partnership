@@ -188,13 +188,25 @@ def _required_text(value: Any, field: str, error: type[OutreachError]) -> str:
 
 
 def _claims_allow_registry(claims: Any) -> bool:
-    """True only for the identities ``human_operator_all_suppression`` admits."""
+    """True for the identities a SELECT policy on ``suppression_registry`` admits.
+
+    Humans see the whole ledger; a drafter agent sees it while it holds an active task
+    (``agent_select_suppression_registry``, migration 20261123170000). The distinction matters
+    because RLS *filters* rather than raises: an identity with no policy gets zero rows, and zero
+    rows read as "nothing is suppressed". The drafter case is safe only because its policy is
+    all-or-nothing — visibility is decided by the task, never by the row — so an empty result for a
+    scoped agent means the ledger really is empty for what it is asking. An identity whose policy
+    could hide individual rows must not be treated as readable.
+    """
     if not isinstance(claims, Mapping):
         return False
     app_metadata = claims.get("app_metadata")
     if not isinstance(app_metadata, Mapping):
         return False
-    return str(app_metadata.get("user_role") or "") in HUMAN_ROLE_CLAIMS
+    role = str(app_metadata.get("user_role") or "")
+    if role in HUMAN_ROLE_CLAIMS:
+        return True
+    return role == "agent" and str(app_metadata.get("subagent_type") or "") == "drafter"
 
 
 # ---------------------------------------------------------------------------

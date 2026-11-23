@@ -40,6 +40,100 @@ class OperatorSession:
         return self.user_id
 
 
+class AgentSessionError(RuntimeError):
+    """No valid agent session could be established for the requested subagent type."""
+
+
+@dataclass(frozen=True)
+class AgentSession:
+    """A signed-in agent, with the identity its rows will carry.
+
+    ``user_id`` here is the agent's ``agent_id`` claim, not a human uuid — outreach rows record it
+    in ``drafted_by_agent_identity``, which is a text column compared against
+    ``current_agent_identity()`` by the insert policy.
+    """
+
+    client: PostgresClient
+    agent_id: str
+    email: str
+    subagent_type: str
+    claims: Mapping[str, Any]
+
+    @property
+    def identity(self) -> str:
+        return self.agent_id
+
+    @property
+    def user_id(self) -> str:
+        # CLI call sites and the draft writer both read `user_id`; for an agent the row identity is
+        # the agent id, so the two names must not diverge.
+        return self.agent_id
+
+
+def open_agent_session(
+    subagent_type: str,
+    environ: Optional[Mapping[str, str]] = None,
+    *,
+    email: Optional[str] = None,
+    password: Optional[str] = None,
+    expected_agent_id: Optional[str] = None,
+) -> AgentSession:
+    """Sign in as an agent of ``subagent_type`` and refuse anything else.
+
+    The database decides what an agent may do; this function only refuses to hand a caller a
+    session whose claims do not say what the caller thinks they say. A human token passed here is
+    an error, not a downgrade: the agent policies would deny every row and the caller would report
+    an empty database instead of a permission mistake.
+    """
+    env = _environment(environ)
+    if not (email and password):
+        raise AgentSessionError(
+            f"no credentials for the {subagent_type!r} agent: pass email and password, or set "
+            f"{subagent_type.upper()}_EMAIL and {subagent_type.upper()}_PASSWORD"
+        )
+
+    config = DatabaseConfig.load(env)
+    assert_database_environment(config)
+
+    auth = PostgresAuthClient(config.dsn, config.jwt_secret)
+    try:
+        signed_in = auth.sign_in_with_password(email, password)
+    except PermissionError as exc:
+        raise AgentSessionError(str(exc)) from exc
+
+    claims = dict(signed_in.get("claims") or {})
+    app_metadata = dict(claims.get("app_metadata") or {})
+    role = str(app_metadata.get("user_role") or "")
+    actual_type = str(app_metadata.get("subagent_type") or "")
+    agent_id = str(app_metadata.get("agent_id") or "")
+
+    if role != "agent":
+        raise AgentSessionError(
+            f"this identity is not an agent: app_metadata.user_role is {role or 'absent'!r}. "
+            "No agent session was opened."
+        )
+    if actual_type != subagent_type:
+        raise AgentSessionError(
+            f"this identity is a {actual_type or 'untyped'!r} agent, not {subagent_type!r}; "
+            "the two are different policies."
+        )
+    if not agent_id:
+        raise AgentSessionError("the agent identity carries no agent_id; every policy compares it")
+    if expected_agent_id and agent_id != expected_agent_id:
+        raise AgentSessionError(
+            f"this identity is {agent_id!r}, not the configured {expected_agent_id!r}"
+        )
+
+    client = PostgresClient(config.dsn, role="authenticated", claims=claims)
+    return AgentSession(
+        client=client,
+        agent_id=agent_id,
+        email=str(signed_in["user"].get("email") or email),
+        subagent_type=subagent_type,
+        claims=claims,
+    )
+
+
 def _environment(environ: Optional[Mapping[str, str]]) -> dict[str, str]:
     """Resolve configuration: an explicit mapping is authoritative, disk is the default."""
     if environ is not None:

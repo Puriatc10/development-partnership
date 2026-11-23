@@ -80,6 +80,16 @@ def _as_operator(cursor, sub: str = OPERATOR_ID) -> None:
     cursor.execute("select set_config('request.jwt.claims', %s, true)", (json.dumps(claims),))
 
 
+def _as_agent(cursor, agent_id: str = "hermes-drafter-v1", subagent: str = "drafter") -> None:
+    claims = {
+        "sub": "99999999-9999-4999-8999-999999999999",
+        "role": "authenticated",
+        "app_metadata": {"user_role": "agent", "subagent_type": subagent, "agent_id": agent_id},
+    }
+    cursor.execute("set local role authenticated")
+    cursor.execute("select set_config('request.jwt.claims', %s, true)", (json.dumps(claims),))
+
+
 def _as_dispatcher(cursor) -> None:
     claims = {
         "sub": OPERATOR_ID,
@@ -365,6 +375,50 @@ def test_dispatch_states_require_a_dispatcher_identity(cur):
     )
     cur.execute("select sending_status from outreach_messages where id = %s", (message_id,))
     assert cur.fetchone()[0] == "sending"
+
+
+def test_a_drafter_agent_cannot_approve_the_draft_it_wrote(cur):
+    """Drafting and approving must not be the same principal.
+
+    The drafter needs an active task to see the row at all, which is why one is seeded: without it
+    the UPDATE would match zero rows for the uninteresting reason that the row is invisible.
+    """
+    company_id, _ = _seed_company(cur)
+    message_id = _approved_draft(cur, company_id)
+
+    # A fresh draft in the same company, written by the drafter's own identity.
+    _as_owner(cur)
+    draft_id = str(uuid.uuid4())
+    cur.execute(
+        "select contact_id from outreach_messages where id = %s", (message_id,)
+    )
+    contact_id = cur.fetchone()[0]
+    cur.execute(
+        "insert into outreach_messages (id, company_id, contact_id, channel, subject, body,"
+        " personalization_rationale, approval_status, sending_status,"
+        " personalization_evidence_ids, drafted_by_agent_identity)"
+        " values (%s, %s, %s, 'email', 'Hello', 'note', 'guard fixture', 'draft', 'draft', '{}',"
+        " 'hermes-drafter-v1')",
+        (draft_id, company_id, contact_id),
+    )
+    cur.execute(
+        "insert into tasks (id, title, task_type, assigned_actor_type, assigned_actor_identity,"
+        " company_id, contact_id, status) values (gen_random_uuid(), 'draft', 'outreach_drafting',"
+        " 'agent', 'hermes-drafter-v1', %s, %s, 'in_progress')",
+        (company_id, contact_id),
+    )
+
+    _as_agent(cur)
+    cur.execute(
+        "update outreach_messages set approval_status = 'approved', approved_by_human_id = %s"
+        " where id = %s",
+        (OPERATOR_ID, draft_id),
+    )
+    assert cur.rowcount == 0, "a drafter agent approved its own draft"
+
+    _as_owner(cur)
+    cur.execute("select approval_status from outreach_messages where id = %s", (draft_id,))
+    assert cur.fetchone()[0] == "draft"
 
 
 def test_deleting_a_reviewed_candidate_leaves_an_audit_row(cur):

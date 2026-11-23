@@ -26,7 +26,7 @@
 |---|---|---|
 | Branch / HEAD | `main` @ `447dc94` | `git rev-parse HEAD` |
 | Tracked files | 154 | `git ls-files \| wc -l` |
-| Full suite | **671 collected / 671 passed / 0 skipped / 0 failed** | `pytest`; `tests/db` includes 11 regression cases for the guard-semantics defect a probe, not a test, first found |
+| Full suite | **673 collected / 673 passed / 0 skipped / 0 failed** | `pytest`; `tests/db` includes 12 regression cases for the guard-semantics defect a probe, not a test, first found |
 | Skipped | all six in `tests/db/`, `ERYNDEX_DB_URL` unset | `tests/db/test_security_fixes_db.py:31-33` |
 | Python LOC | 13,647 | `wc -l` over the eight packages |
 | Database | **self-hosted PostgreSQL 17.11** in compose (`eryndex-postgres`, 127.0.0.1:5433) | ADR-0007; `reports/eryndex/migration-to-postgres-execution.md` |
@@ -105,7 +105,7 @@
 |---|---|---|---|---|---|
 | G1 | Implement `QualificationReader` / `SuppressionReader` / `DraftWriter` | Outreach | **COMPLETED** | live | `outreach/adapters.py`; a real draft was created through all three ports |
 | G2 | Draft generator grounded in approved evidence | Outreach | **COMPLETED** | live | `outreach/drafts.py`; deterministic, cites finding UUIDs, refused price/headcount/deadline language by its own guard |
-| G3 | Gate 3 / Gate 4 operator commands | Operations | **COMPLETED** | live | `scripts/outreach_cli.py approve|authorize`; message approved by the operator, authorisation left `sending_status='draft'` |
+| G3 | Gate 3 / Gate 4 operator commands | Operations | **COMPLETED** | live | `scripts/outreach_cli.py approve|authorize`; message `00192613…` drafted by `hermes-drafter-v1` and approved by the operator — the draft and the approval are different principals |
 | G4 | Eligibility gate (content → qualification → suppression, fail-closed) | Outreach | COMPLETED | unit | `outreach/gate.py:625,903`; 134 tests; adversarial review closed 2 critical / 6 high |
 | G5 | Dispatch unreachable | Outreach | **COMPLETED** | live | `dispatch.py:25,47-75` (no transport, every method raises) and `20261123160000` — transport states now require a `dispatcher` claim that no identity carries, so the database cannot be talked into `sent` either |
 

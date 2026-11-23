@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -56,8 +57,14 @@ from typing import Any, Mapping, Sequence
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
+from contracts.environment import load_env_file  # noqa: E402
 from contracts.errors import EnvironmentGuardError, GateViolation  # noqa: E402
-from operations.session import OperatorSessionError, open_session  # noqa: E402
+from operations.session import (  # noqa: E402
+    AgentSessionError,
+    OperatorSessionError,
+    open_agent_session,
+    open_session,
+)
 from outreach.adapters import (  # noqa: E402
     PostgresDraftWriter,
     PostgresQualificationReader,
@@ -134,6 +141,85 @@ def _one(client: Any, table: str, row_id: str, columns: str, what: str) -> dict[
 # draft
 # ---------------------------------------------------------------------------
 
+DRAFT_TASK_TYPE = "outreach_drafting"
+
+
+def _ensure_drafting_task(operator: Any, args: argparse.Namespace, agent_id: str) -> str:
+    """Give the drafter the assignment its policies require, and reuse it on retry.
+
+    Every agent read here is task-scoped: without an active task for the company, the drafter sees
+    no company, no contact, no scorecard and no messages. The operator creates the assignment
+    because `human_operator_all_tasks` is the only insert policy on `tasks`.
+    """
+    rows = operator.client.get(
+        "tasks",
+        {
+            "company_id": f"eq.{args.company_id}",
+            "assigned_actor_type": "eq.agent",
+            "assigned_actor_identity": f"eq.{agent_id}",
+            "status": "in.(pending,in_progress)",
+            "select": "id",
+            "limit": "5",
+        },
+    )
+    if rows:
+        return str(rows[0]["id"])
+
+    created = operator.client.post(
+        "tasks",
+        {
+            "title": f"Draft outreach for company {args.company_id}",
+            "task_type": DRAFT_TASK_TYPE,
+            "priority": "medium",
+            "status": "pending",
+            "assigned_actor_type": "agent",
+            "assigned_actor_identity": agent_id,
+            "company_id": args.company_id,
+            "contact_id": args.contact_id,
+            "campaign_id": args.campaign_id or None,
+        },
+    )
+    if not created:
+        raise OutreachError(f"the operator could not create a drafting task for {agent_id}")
+    return str(created[0]["id"])
+
+
+def _draft_identity(operator: Any, args: argparse.Namespace) -> Any:
+    """Return the session that will author the draft.
+
+    Drafting and approving must not be the same principal, so the draft is written by the
+    ``drafter`` agent whenever its credentials exist. If they are absent the operator writes it and
+    the row says so — a fallback that is visible in `drafted_by_agent_identity`, never disguised.
+    """
+    env = {**load_env_file(), **os.environ}
+    email, password = env.get("DRAFTER_EMAIL"), env.get("DRAFTER_PASSWORD")
+    if not (email and password):
+        print(
+            "warning: no DRAFTER_EMAIL/DRAFTER_PASSWORD, so the operator is drafting. "
+            "The message will record the operator as its author and the approval will not be "
+            "a second pair of eyes.",
+            file=sys.stderr,
+        )
+        return operator
+
+    try:
+        drafter = open_agent_session(
+            "drafter",
+            env,
+            email=email,
+            password=password,
+            expected_agent_id=env.get("DRAFTER_AGENT_ID") or None,
+        )
+    except AgentSessionError as exc:
+        raise OutreachError(
+            f"cannot open the drafter session: {exc}. Nothing was drafted."
+        ) from exc
+
+    task_id = _ensure_drafting_task(operator, args, drafter.agent_id)
+    print(f"drafting as {drafter.agent_id} (task {task_id})", file=sys.stderr)
+    args._signer_email = operator.email
+    return drafter
+
 
 def _cmd_draft(session: Any, args: argparse.Namespace) -> int:
     client = session.client
@@ -195,7 +281,9 @@ def _cmd_draft(session: Any, args: argparse.Namespace) -> int:
         campaign_id=campaign_id,
         step=step,
         channel=args.channel,
-        signer=args.signer if args.signer is not None else _default_signer(session.email),
+        signer=args.signer
+        if args.signer is not None
+        else _default_signer(getattr(args, "_signer_email", None) or session.email),
     )
 
     request = DraftRequest(
@@ -616,6 +704,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OperatorSessionError, EnvironmentGuardError) as exc:
         print(f"cannot open an operator session: {exc}", file=sys.stderr)
         return 2
+
+    if args.func is _cmd_draft:
+        try:
+            session = _draft_identity(session, args)
+        except (AgentSessionError, OutreachError) as exc:
+            print(f"cannot draft: {exc}", file=sys.stderr)
+            return 2
 
     try:
         return int(args.func(session, args))

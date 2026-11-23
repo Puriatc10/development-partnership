@@ -619,10 +619,26 @@ def test_suppression_reader_refuses_when_the_ledger_is_unreadable():
         PostgresSuppressionReader(db).check(COMPANY, CONTACT)
 
 
-def test_suppression_reader_refuses_an_agent_identity_instead_of_reading_zero_rows():
-    """The deployed RLS gives agents no path to suppression_registry (L1835-1836)."""
+def test_a_drafter_agent_may_read_the_ledger_because_a_policy_admits_it():
+    """The drafter's SELECT policy is all-or-nothing, so an empty read really means "clear"."""
     db = full_db()
     db.claims = AGENT_CLAIMS
+    reader = PostgresSuppressionReader(db)
+    assert reader.registry_readable is True
+    report = reader.check(COMPANY, CONTACT)
+    assert report.state == "clear", report
+    assert "suppression_registry" in report.sources_checked
+    assert any(call[1] == "suppression_registry" for call in db.calls)
+
+
+def test_an_agent_without_a_registry_policy_is_refused_instead_of_reading_zero_rows():
+    """A researcher has no policy on suppression_registry: zero rows would read as "clear"."""
+    db = full_db()
+    db.claims = {
+        "sub": "99999999-9999-4999-8999-999999999999",
+        "role": "authenticated",
+        "app_metadata": {"user_role": "agent", "subagent_type": "researcher", "agent_id": "hermes-researcher-v1"},
+    }
     reader = PostgresSuppressionReader(db)
     assert reader.registry_readable is False
     with pytest.raises(SuppressionLookupError) as exc:
