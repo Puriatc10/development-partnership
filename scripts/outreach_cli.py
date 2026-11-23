@@ -1,0 +1,651 @@
+"""Draft, list, show, approve and authorise outreach messages. It cannot send.
+
+Five subcommands, three of them read-only:
+
+* ``draft``     — run the eligibility gate, render a deterministic draft, persist it;
+* ``list``      — the drafts filed under one company;
+* ``show``      — one message, in full;
+* ``approve``   — Gate G3: an operator marks a draft approved (a human action);
+* ``authorize`` — Gate G4: record the dispatch authorisation decision.
+
+``authorize`` records a decision and stops there. Dispatch does not exist in this
+build: ``outreach.dispatch`` raises unconditionally and this script does not
+import it — not to ask whether dispatch is available, not to print its state.
+The command says so in its output because the absence is the point.
+
+Who is recorded as the drafter
+------------------------------
+``drafted_by_agent_identity`` is stamped with the signed-in operator's id. The
+text is template-generated (``outreach.drafts``, no model, no network) and the row
+is inserted under ``human_operator_all_outreach_messages``, so the operator is the
+actor that caused it. The agent-side insert policy additionally requires
+``is_agent_type('drafter')`` (crm/schema.sql L1977-1999, S8 in
+reports/eryndex/outreach-workflow.md) and this build provisions no drafter
+identity; writing an agent's name onto a row an operator created would be a lie,
+so it is not done.
+
+Every command runs as a signed-in human operator (``operations.session``). That
+is deliberate rather than convenient: the only policy that admits a read of
+``suppression_registry`` is ``human_operator_all_suppression``, and the draft-time
+suppression check has to be a real read (see ``outreach.adapters``). An agent
+session would fail closed with ``suppression_lookup_failed``, which is the correct
+answer for an identity that cannot see the ledger.
+
+Refusals from the gate are printed with the code that caused them
+(``qualification_missing``, ``qualification_pending_review``, ``suppressed_domain``,
+...) and exit 1. Configuration and session failures exit 2. Nothing here retries,
+queues, schedules or sends.
+
+    python scripts/outreach_cli.py draft --company-id <uuid> --contact-id <uuid> \\
+        --campaign-id <uuid> --step 1
+    python scripts/outreach_cli.py list --company-id <uuid>
+    python scripts/outreach_cli.py show <message-id>
+    python scripts/outreach_cli.py approve <message-id> --note "read it twice, tone is right"
+    python scripts/outreach_cli.py authorize <message-id>
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Mapping, Sequence
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+
+from contracts.errors import EnvironmentGuardError, GateViolation  # noqa: E402
+from operations.session import OperatorSessionError, open_session  # noqa: E402
+from outreach.adapters import (  # noqa: E402
+    PostgresDraftWriter,
+    PostgresQualificationReader,
+    PostgresSuppressionReader,
+)
+from outreach.drafts import DraftGenerationError, render_draft, template_for  # noqa: E402
+from outreach.gate import (  # noqa: E402
+    DraftOutcome,
+    DraftRejected,
+    DraftRequest,
+    DraftRequestError,
+    create_draft,
+    draft_idempotency_key,
+    evaluate_draft_eligibility,
+)
+from outreach.ports import OUTREACH_CHANNELS, OutreachError  # noqa: E402
+from orchestration.workflow import assert_gate  # noqa: E402
+
+#: Stated wherever an approval or authorisation is printed. It is a fact about the
+#: build, not a feature flag: no environment variable changes it.
+DISPATCH_STATE = (
+    "dispatch: disabled — this build has no sending path; outreach.dispatch raises "
+    "DispatchDisabled and is not imported here"
+)
+
+MESSAGE_TABLE = "outreach_messages"
+
+
+# ---------------------------------------------------------------------------
+# Output helpers
+# ---------------------------------------------------------------------------
+
+
+def _emit_json(payload: Any) -> None:
+    print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+
+
+def _rejection_payload(decision: Any, *, company_id: str, contact_id: str) -> dict[str, Any]:
+    code = decision.code.value if decision.code is not None else ""
+    return {
+        "status": "rejected",
+        "rejection_code": code,
+        "rejection_codes": [c.value for c in decision.codes],
+        "detail": decision.detail,
+        "company_id": company_id,
+        "contact_id": contact_id,
+    }
+
+
+def _print_rejection(payload: Mapping[str, Any], *, as_json: bool) -> None:
+    if as_json:
+        _emit_json(payload)
+        return
+    print(f"refused: {payload['rejection_code'] or 'unknown'}", file=sys.stderr)
+    if len(payload["rejection_codes"]) > 1:
+        print(f"codes  : {', '.join(payload['rejection_codes'])}", file=sys.stderr)
+    print(f"detail : {payload['detail']}", file=sys.stderr)
+    print("nothing was written", file=sys.stderr)
+
+
+def _one(client: Any, table: str, row_id: str, columns: str, what: str) -> dict[str, Any]:
+    """Read exactly one row by id; absence and ambiguity are both refusals."""
+    rows = client.get(table, {"id": f"eq.{row_id}", "select": columns, "limit": "2"})
+    if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
+        raise OutreachError(f"reading {table} for {what} returned an unusable shape")
+    if not rows:
+        raise LookupError(f"{what} {row_id} does not exist or is not visible to this identity")
+    if len(rows) > 1:
+        raise OutreachError(f"{what} {row_id} matched {len(rows)} rows; refusing to guess")
+    return dict(rows[0])
+
+
+# ---------------------------------------------------------------------------
+# draft
+# ---------------------------------------------------------------------------
+
+
+def _cmd_draft(session: Any, args: argparse.Namespace) -> int:
+    client = session.client
+    reader = PostgresQualificationReader(client)
+    suppression = PostgresSuppressionReader(client)
+    writer = PostgresDraftWriter(client, session.user_id)
+
+    step = int(args.step)
+    template = template_for(step)
+    campaign_id = args.campaign_id or None
+
+    # Phase 1 — ask the gate before composing anything. The probe request is
+    # structurally valid so the gate evaluates the *company*, not the text: a
+    # rejection here is the real reason this company may not be written to, and it
+    # is reported with its code instead of being hidden behind a render failure.
+    probe = DraftRequest(
+        company_id=args.company_id,
+        contact_id=args.contact_id,
+        channel=args.channel,
+        outreach_event=template.outreach_event,
+        subject="eligibility probe",
+        body="eligibility probe",
+        sequence_step=step,
+        campaign_id=campaign_id,
+    )
+    decision = evaluate_draft_eligibility(probe, reader, suppression)
+    if not decision.eligible:
+        payload = _rejection_payload(
+            decision, company_id=args.company_id, contact_id=args.contact_id
+        )
+        payload["idempotency_key"] = draft_idempotency_key(probe)
+        _print_rejection(payload, as_json=args.json)
+        return 1
+    if decision.qualification is None:
+        # The gate cannot return "eligible" without the record it evaluated; if it
+        # ever does, that is a broken decision, not permission to compose.
+        raise OutreachError(
+            "the gate reported the company eligible but carried no scorecard; refusing to draft"
+        )
+
+    # Phase 2 — compose from the scorecard the gate just approved, and from real
+    # rows only: the company's name and the contact's first name come from the
+    # database, never from the command line.
+    company = _one(
+        client, "companies", args.company_id, "id,name,primary_domain", "company"
+    )
+    contact = _one(client, "contacts", args.contact_id, "id,company_id,first_name", "contact")
+    if str(contact.get("company_id") or "") != str(args.company_id):
+        raise OutreachError(
+            f"contact {args.contact_id} belongs to company {contact.get('company_id')}, not "
+            f"{args.company_id}; nothing was written"
+        )
+
+    payload = render_draft(
+        company=company,
+        qualification=decision.qualification,
+        contact=contact,
+        agent_identity=session.user_id,
+        campaign_id=campaign_id,
+        step=step,
+        channel=args.channel,
+        signer=args.signer if args.signer is not None else _default_signer(session.email),
+    )
+
+    request = DraftRequest(
+        company_id=payload.company_id,
+        contact_id=payload.contact_id,
+        channel=payload.channel,
+        outreach_event=payload.outreach_event,
+        subject=payload.subject,
+        body=payload.body,
+        sequence_step=payload.sequence_step,
+        campaign_id=payload.campaign_id,
+        proposed_commercial_model=payload.proposed_commercial_model,
+    )
+
+    # Phase 3 — create_draft re-evaluates everything (content, qualification,
+    # suppression) and is the only writer. Passing the pre-flight decision would
+    # be trusting a stale answer.
+    outcome: DraftOutcome = create_draft(request, reader, suppression, writer)
+    if outcome.status == "rejected":
+        _print_rejection(
+            _rejection_payload(
+                outcome.decision, company_id=args.company_id, contact_id=args.contact_id
+            )
+            | {"detail": outcome.detail},
+            as_json=args.json,
+        )
+        return 1
+
+    result = {
+        "status": outcome.status,
+        "message_id": outcome.draft_id,
+        "company_id": payload.company_id,
+        "contact_id": payload.contact_id,
+        "campaign_id": payload.campaign_id,
+        "sequence_step": payload.sequence_step,
+        "channel": payload.channel,
+        "subject": payload.subject,
+        "allowed_because": outcome.decision.detail,
+        "evidence_ids": list(outcome.decision.evidence_refs),
+        "drafted_by_agent_identity": payload.drafted_by_agent_identity,
+        "idempotency_key": outcome.idempotency_key,
+        "content_matches": outcome.content_matches,
+        "detail": outcome.detail,
+        "dispatch": "disabled",
+    }
+    if args.json:
+        _emit_json(result)
+    else:
+        if outcome.status == "already_exists":
+            print(
+                f"no draft written: a message already occupies this slot "
+                f"({result['message_id']}); content_matches={outcome.content_matches}"
+            )
+            if outcome.detail:
+                print(f"  {outcome.detail}")
+            print("  run `show " + str(result["message_id"]) + "` to read what is stored")
+        else:
+            print(f"created message {result['message_id']}")
+            print(
+                f"  company {result['company_id']} / contact {result['contact_id']} / "
+                f"{result['channel']} / step {result['sequence_step']}"
+            )
+            print(f"  subject: {result['subject']}")
+            print(f"allowed because: {result['allowed_because']}")
+            print(f"evidence: {', '.join(result['evidence_ids'])}")
+        print(DISPATCH_STATE)
+    return 0
+
+
+def _default_signer(email: str) -> str:
+    """The operator's own name, derived from the address they sign in with."""
+    local = str(email or "").split("@", 1)[0].strip()
+    return local.replace(".", " ").replace("_", " ").strip()
+
+
+# ---------------------------------------------------------------------------
+# list / show
+# ---------------------------------------------------------------------------
+
+
+def _cmd_list(session: Any, args: argparse.Namespace) -> int:
+    rows = session.client.get(
+        MESSAGE_TABLE,
+        {
+            "company_id": f"eq.{args.company_id}",
+            "select": "id,contact_id,campaign_id,channel,sequence_step,approval_status,"
+            "sending_status,subject,created_at",
+            "order": "created_at.desc",
+            "limit": str(args.limit),
+        },
+    )
+    if not isinstance(rows, list):
+        raise OutreachError("listing outreach_messages returned an unusable shape")
+    payload = {"status": "ok", "company_id": args.company_id, "count": len(rows), "messages": rows}
+    if args.json:
+        _emit_json(payload)
+        return 0
+    if not rows:
+        print(f"no outreach messages for company {args.company_id}")
+        return 0
+    print(f"{len(rows)} message(s) for company {args.company_id}")
+    for row in rows:
+        print(
+            f"  {row.get('id')}  step {row.get('sequence_step')}  {row.get('channel')}  "
+            f"{row.get('approval_status')}/{row.get('sending_status')}  "
+            f"{str(row.get('subject') or '')[:70]}"
+        )
+    print(DISPATCH_STATE)
+    return 0
+
+
+def _cmd_show(session: Any, args: argparse.Namespace) -> int:
+    row = _one(
+        session.client,
+        MESSAGE_TABLE,
+        args.message_id,
+        "id,company_id,contact_id,campaign_id,channel,subject,body,personalization_evidence_ids,"
+        "personalization_rationale,proposed_commercial_model,approval_status,approved_by_human_id,"
+        "approved_at,sending_status,sent_at,sequence_step,drafted_by_agent_identity,created_at",
+        "message",
+    )
+    if args.json:
+        _emit_json({"status": "ok", "message": row, "dispatch": "disabled"})
+        return 0
+    print(f"message {row.get('id')}")
+    for key in (
+        "company_id",
+        "contact_id",
+        "campaign_id",
+        "channel",
+        "sequence_step",
+        "approval_status",
+        "sending_status",
+        "approved_by_human_id",
+        "approved_at",
+        "sent_at",
+        "proposed_commercial_model",
+        "drafted_by_agent_identity",
+        "created_at",
+    ):
+        print(f"  {key:28}: {row.get(key)}")
+    print(f"  personalization_evidence_ids: {row.get('personalization_evidence_ids')}")
+    print(f"\nsubject: {row.get('subject')}\n")
+    print(str(row.get("body") or "").rstrip())
+    print("\n" + str(row.get("personalization_rationale") or ""))
+    print(DISPATCH_STATE)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# approve (G3) / authorize (G4)
+# ---------------------------------------------------------------------------
+
+
+def _require_draft_state(row: Mapping[str, Any]) -> None:
+    status = str(row.get("approval_status") or "")
+    sending = str(row.get("sending_status") or "")
+    if sending != "draft":
+        raise OutreachError(
+            f"message {row.get('id')} has sending_status {sending!r}; only a draft may be "
+            "approved or authorised here"
+        )
+    if status not in {"draft", "pending_human_approval"}:
+        raise OutreachError(
+            f"message {row.get('id')} has approval_status {status!r}; only a draft or a "
+            "pending approval can be approved (rejected messages return to draft first)"
+        )
+
+
+def _record_activity(
+    client: Any,
+    *,
+    company_id: str,
+    contact_id: str,
+    subject: str,
+    description: str,
+    operator_id: str,
+    metadata: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Write the decision into ``activities`` — the only append-only trail we may use.
+
+    ``outreach_messages`` has no column for "authorised"; ``audit_logs`` is written
+    only by triggers and is not insertable. An activity row is the honest record:
+    it names the actor, the message and the decision, and it changes nothing about
+    the message itself.
+    """
+    rows = client.post(
+        "activities",
+        {
+            "company_id": company_id,
+            "contact_id": contact_id or None,
+            "activity_type": "note",
+            "subject": subject,
+            "description": description,
+            "performed_by_actor_type": "human",
+            "performed_by_actor_identity": operator_id,
+            "metadata": dict(metadata),
+        },
+    )
+    if not isinstance(rows, list) or not rows or not isinstance(rows[0], Mapping):
+        raise OutreachError("the activity was not recorded; the decision has no audit trail")
+    return dict(rows[0])
+
+
+def _cmd_approve(session: Any, args: argparse.Namespace) -> int:
+    # Gate G3 is a human decision. The session already proved the role; the gate
+    # contract is asserted too, so a future caller cannot pass it with the wrong
+    # claims by reusing this function.
+    assert_gate(
+        "G3",
+        session.claims,
+        evidence={"message_id": args.message_id, "reviewer": session.user_id, "decision": "approve"},
+    )
+
+    row = _one(
+        session.client,
+        MESSAGE_TABLE,
+        args.message_id,
+        "id,company_id,contact_id,approval_status,sending_status,subject",
+        "message",
+    )
+    _require_draft_state(row)
+
+    updated = session.client.patch(
+        MESSAGE_TABLE,
+        {"approval_status": "approved", "approved_by_human_id": session.user_id},
+        {"id": f"eq.{args.message_id}"},
+    )
+    if not isinstance(updated, list) or len(updated) != 1:
+        raise OutreachError(
+            f"approving message {args.message_id} touched {len(updated) if isinstance(updated, list) else '?'} "
+            "rows; exactly one was expected"
+        )
+    stored = dict(updated[0])
+    if stored.get("approval_status") != "approved":
+        raise OutreachError(
+            f"the database did not record the approval: approval_status="
+            f"{stored.get('approval_status')!r}"
+        )
+    if str(stored.get("approved_by_human_id") or "") != session.user_id:
+        raise OutreachError("the stored approver is not the signed-in operator")
+    if stored.get("sending_status") != "draft":
+        raise OutreachError(
+            f"approval changed the sending status to {stored.get('sending_status')!r}; "
+            "approval must not queue anything"
+        )
+
+    activity = None
+    if args.note:
+        activity = _record_activity(
+            session.client,
+            company_id=str(stored.get("company_id") or ""),
+            contact_id=str(stored.get("contact_id") or ""),
+            subject=f"Gate G3 approval of outreach message {args.message_id}",
+            description=(
+                f"Approved by operator {session.user_id}. Note: {args.note.strip()}"
+            ),
+            operator_id=session.user_id,
+            metadata={"gate": "G3", "message_id": args.message_id, "decision": "approved"},
+        )
+
+    result = {
+        "status": "approved",
+        "message_id": stored.get("id"),
+        "approval_status": stored.get("approval_status"),
+        "approved_by_human_id": stored.get("approved_by_human_id"),
+        "approved_at": stored.get("approved_at"),
+        "sending_status": stored.get("sending_status"),
+        "note_activity_id": (activity or {}).get("id"),
+        "dispatch": "disabled",
+    }
+    if args.json:
+        _emit_json(result)
+        return 0
+    print(f"approved message {result['message_id']} (gate G3) by {result['approved_by_human_id']}")
+    print(f"  approval_status={result['approval_status']}  sending_status={result['sending_status']}")
+    if result["note_activity_id"]:
+        print(f"  note recorded as activity {result['note_activity_id']}")
+    print(f"  next: `authorize {result['message_id']}` records the gate G4 decision")
+    print(DISPATCH_STATE)
+    return 0
+
+
+def _cmd_authorize(session: Any, args: argparse.Namespace) -> int:
+    now = datetime.now(timezone.utc).isoformat()
+    assert_gate(
+        "G4",
+        session.claims,
+        evidence={
+            "message_id": args.message_id,
+            "reviewer": session.user_id,
+            "authorized_at": now,
+        },
+    )
+
+    row = _one(
+        session.client,
+        MESSAGE_TABLE,
+        args.message_id,
+        "id,company_id,contact_id,approval_status,approved_by_human_id,approved_at,"
+        "sending_status,sent_at",
+        "message",
+    )
+    if row.get("approval_status") != "approved":
+        raise OutreachError(
+            f"message {args.message_id} is {row.get('approval_status')!r}; gate G4 applies to an "
+            "approved message only (approve it at G3 first)"
+        )
+    if not row.get("approved_by_human_id") or not row.get("approved_at"):
+        raise OutreachError(
+            f"message {args.message_id} carries no human approver metadata; the approval is not "
+            "provable, so authorisation would be recorded against nothing"
+        )
+    if row.get("sending_status") != "draft":
+        raise OutreachError(
+            f"message {args.message_id} has sending_status {row.get('sending_status')!r}; "
+            "authorisation is recorded for a draft, never for something already in flight"
+        )
+    if row.get("sent_at"):
+        raise OutreachError(f"message {args.message_id} carries sent_at; refusing to touch it")
+
+    activity = _record_activity(
+        session.client,
+        company_id=str(row.get("company_id") or ""),
+        contact_id=str(row.get("contact_id") or ""),
+        subject=f"Gate G4 dispatch authorisation for outreach message {args.message_id}",
+        description=(
+            f"Dispatch authorisation recorded by operator {session.user_id}. No message was "
+            "transmitted: this build has no sending path, and authorise is a record of the "
+            "decision only."
+        ),
+        operator_id=session.user_id,
+        metadata={
+            "gate": "G4",
+            "message_id": args.message_id,
+            "decision": "authorised",
+            "authorized_at": now,
+            "dispatch": "disabled",
+        },
+    )
+
+    result = {
+        "status": "authorised",
+        "message_id": args.message_id,
+        "authorisation_activity_id": activity.get("id"),
+        "authorized_at": now,
+        "authorised_by": session.user_id,
+        "sending_status": row.get("sending_status"),
+        "dispatch": "disabled",
+    }
+    if args.json:
+        _emit_json(result)
+        return 0
+    print(f"dispatch authorisation recorded for message {args.message_id} (gate G4) by {session.user_id}")
+    print(f"  activity {activity.get('id')}  authorised_at {now}")
+    print(f"  sending_status is still {row.get('sending_status')!r}; nothing was transmitted")
+    print(DISPATCH_STATE)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Parser / entry point
+# ---------------------------------------------------------------------------
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python scripts/outreach_cli.py",
+        description=(
+            "Outreach drafting surface: drafts are created as drafts, approval is a human "
+            "action (G3), authorisation is recorded (G4). Nothing sends."
+        ),
+    )
+    parser.add_argument("--json", action="store_true", help="machine-readable output")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    draft = sub.add_parser("draft", help="run the gate and persist one draft")
+    draft.add_argument("--company-id", required=True, help="companies.id")
+    draft.add_argument("--contact-id", required=True, help="contacts.id (NOT NULL on the row)")
+    draft.add_argument("--campaign-id", default=None, help="outreach_campaigns.id (optional)")
+    draft.add_argument("--step", type=int, default=1, help="sequence_step (>= 1)")
+    draft.add_argument("--channel", default="email", choices=list(OUTREACH_CHANNELS))
+    draft.add_argument(
+        "--signer",
+        default=None,
+        help="name on the closing line (defaults to the operator's address local part)",
+    )
+    draft.set_defaults(func=_cmd_draft)
+
+    listing = sub.add_parser("list", help="list outreach messages for one company")
+    listing.add_argument("--company-id", required=True, help="companies.id")
+    listing.add_argument("--limit", type=int, default=50)
+    listing.set_defaults(func=_cmd_list)
+
+    show = sub.add_parser("show", help="show one message in full")
+    show.add_argument("message_id")
+    show.set_defaults(func=_cmd_show)
+
+    approve = sub.add_parser("approve", help="Gate G3 — operator approval of one draft")
+    approve.add_argument("message_id")
+    approve.add_argument("--note", default=None, help="recorded on the activity trail")
+    approve.set_defaults(func=_cmd_approve)
+
+    authorize = sub.add_parser(
+        "authorize", help="Gate G4 — record the dispatch decision (nothing is sent)"
+    )
+    authorize.add_argument("message_id")
+    authorize.set_defaults(func=_cmd_authorize)
+
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+
+    try:
+        session = open_session()
+    except (OperatorSessionError, EnvironmentGuardError) as exc:
+        print(f"cannot open an operator session: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        return int(args.func(session, args))
+    except DraftRejected as exc:
+        print(
+            f"refused: {', '.join(code.value for code in exc.codes)} ({exc.detail})",
+            file=sys.stderr,
+        )
+        return 1
+    except DraftGenerationError as exc:
+        print(f"cannot render a draft: {exc}", file=sys.stderr)
+        return 1
+    except DraftRequestError as exc:
+        print(f"invalid request: {exc}", file=sys.stderr)
+        return 2
+    except GateViolation as exc:
+        print(f"gate refused: {exc}", file=sys.stderr)
+        return 2
+    except LookupError as exc:
+        print(f"not found: {exc}", file=sys.stderr)
+        return 1
+    except OutreachError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001 - a CLI reports; it does not traceback at the operator
+        code = getattr(exc, "code", None)
+        detail = f"[{code}] " if code else ""
+        print(f"error: {detail}{type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
