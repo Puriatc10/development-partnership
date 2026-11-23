@@ -39,6 +39,19 @@ The last line is the one that matters: the loop advances to *authorised*, and th
 cannot leave, because no sender exists and the database will not accept a sending state without an
 approval it can attribute to a human.
 
+**Re-run after the guard fix.** The whole loop was executed again against the hardened database
+(migration `20261123160000`), because the new trigger refuses a message that leaves draft without
+approval and requires a `dispatcher` claim for any transport state:
+
+```
+company 503634ef… · candidate c82c752b… · report 714338ad… · qualification a1a835cf…
+message f913d143…  approval_status=approved  sending_status=draft  evidence_count=6
+dispatch.blocked   dispatch_disabled=True
+```
+
+Nothing about the product changed; the loop still stops where it always stopped. What changed is
+that the database now refuses to be talked into going further.
+
 ## Defects the integration run found (and fixed)
 
 | Defect | How it surfaced | Fix |

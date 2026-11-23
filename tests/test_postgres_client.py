@@ -260,11 +260,19 @@ def test_delete_without_a_filter_is_refused_before_it_reaches_the_database(opera
     assert "no filter" in str(excinfo.value)
 
 
-def test_allow_all_still_obeys_rls(operator):
-    """The flag says the caller meant every visible row; the policy decides what is visible."""
-    visible = operator.get("outreach_messages", {"select": "id"})
-    removed = operator.delete("outreach_messages", allow_all=True)
-    assert removed == len(visible)
+def test_allow_all_is_an_explicit_keyword_only_opt_out():
+    """The guard is bypassed only by a deliberate keyword, never by omitting the filter.
+
+    This case does not execute the statement: ``PostgresClient`` commits per call, so an
+    ``allow_all`` delete in a test would remove real rows from the development database. It
+    asserts the contract instead — the flag exists, it is keyword-only, and it defaults to off.
+    """
+    import inspect
+
+    for method in (PostgresClient.patch, PostgresClient.delete):
+        parameter = inspect.signature(method).parameters["allow_all"]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameter.default is False
 
 
 def test_an_unterminated_quote_in_an_in_list_fails_closed(operator):
