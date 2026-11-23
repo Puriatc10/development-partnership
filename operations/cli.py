@@ -9,8 +9,19 @@ One command group per gate, so an operator never has to know which module implem
     python -m operations.cli candidates reject <candidate-id> --reason "..."
     python -m operations.cli candidates register <candidate-id> --segment digital_agency
 
+    python -m operations.cli qualifications list --status draft
+    python -m operations.cli qualifications show <qualification-id>
+    python -m operations.cli qualifications persist <company-id>
+    python -m operations.cli qualifications approve <qualification-id> --note "..."
+    python -m operations.cli qualifications reject <qualification-id> --reason "..."
+
 Every refusal is printed as a reason plus the next action, never as a traceback: the
 operator has to be able to tell a legitimate policy denial from a bug.
+
+``qualifications persist`` is the one verb that writes as an agent: the human runs the
+command, but the draft is signed by the qualifier identity from ``QUALIFIER_EMAIL`` /
+``QUALIFIER_PASSWORD``, because a scorecard's ``evaluator_identity`` must name the agent
+that produced it. ``approve`` / ``reject`` write as the signed-in human.
 """
 
 from __future__ import annotations
@@ -23,10 +34,12 @@ from typing import Any, Mapping, Sequence
 import requests
 
 from contracts.errors import EnvironmentGuardError
+from integrations.postgres.auth import AuthenticationError
 from integrations.postgres.client import PostgrestError
 from qualification.loader import QualificationInputError
 
 from . import candidates as gate1
+from . import qualifications as gate2
 from .registration import register_candidate
 from .session import OperatorSessionError, open_session
 
@@ -235,6 +248,165 @@ def _cmd_qualify(session: Any, args: argparse.Namespace) -> int:
     return 0
 
 
+#: The seven dimensions, in rubric order, as they appear in ``dimension_evidence``.
+_DIMENSION_EVIDENCE_KEYS = (
+    "customer_flow",
+    "development_demand",
+    "repeatability_orders",
+    "technical_fit",
+    "business_size",
+    "decision_maker_accessibility",
+    "commercial_fit",
+)
+
+
+def _cmd_qualifications_list(session: Any, args: argparse.Namespace) -> int:
+    rows = gate2.list_qualifications(
+        session.client,
+        status=args.status,
+        company_id=args.company_id,
+        limit=args.limit,
+    )
+    if _want_json(args):
+        _print_json(rows)
+        return 0
+    scope = f" with status {args.status}" if args.status else ""
+    if args.company_id:
+        scope += f" for company {args.company_id}"
+    print(f"{len(rows)} scorecard(s){scope}")
+    print(
+        _table(
+            rows,
+            [
+                ("id", "ID"),
+                ("company_id", "COMPANY"),
+                ("review_status", "STATUS"),
+                ("overall_score", "SCORE"),
+                ("qualification_tier", "TIER"),
+                ("evaluator_identity", "EVALUATOR"),
+                ("reviewed_by_human_id", "REVIEWED BY"),
+            ],
+        )
+    )
+    if any(str(row.get("review_status")) == gate2.DRAFT for row in rows):
+        print("\nnext: `qualifications show <id>`, then `qualifications approve <id> --note ...`")
+    return 0
+
+
+def _cmd_qualifications_show(session: Any, args: argparse.Namespace) -> int:
+    row = gate2.show(session.client, args.qualification_id)
+    if _want_json(args):
+        _print_json(row)
+        return 0
+
+    print(f"qualification {row.get('id')}")
+    for key in (
+        "company_id",
+        "review_status",
+        "overall_score",
+        "qualification_tier",
+        "recommended_next_action",
+        "evaluator_type",
+        "evaluator_identity",
+        "reviewed_by_human_id",
+        "reviewed_at",
+        "created_at",
+        "updated_at",
+        "disqualification_reasons",
+    ):
+        print(f"  {key:30}: {_safe(row.get(key))}")
+    if row.get("disqualification_notes"):
+        print(f"  {'disqualification_notes':30}: {_safe(row.get('disqualification_notes'))}")
+
+    evidence = row.get("dimension_evidence") or {}
+    print(f"  dimension_evidence ({len(evidence)}):")
+    if not isinstance(evidence, Mapping):
+        print("    (not an object; the row is inconsistent)")
+    else:
+        for key in _DIMENSION_EVIDENCE_KEYS:
+            entry = evidence.get(key)
+            if not isinstance(entry, Mapping):
+                print(f"    - {key:28} (no evidence recorded)")
+                continue
+            score = entry.get("score")
+            max_points = entry.get("max")
+            text = _safe(entry.get("evidence")).strip()
+            findings = entry.get("finding_ids") or []
+            print(f"    - {key:28} {score}/{max_points}")
+            print(f"      evidence: {text[:240] or '(none)'}")
+            if findings:
+                print(f"      findings: {', '.join(_safe(f) for f in findings)}")
+
+    status = str(row.get("review_status"))
+    if status in gate2.DECIDABLE:
+        print(
+            f"\nnext: `qualifications approve {row.get('id')} --note ...` or "
+            f"`qualifications reject {row.get('id')} --reason ...`"
+        )
+    elif status == gate2.APPROVED:
+        print("\napproved: the company is qualified; outreach drafting may use this scorecard")
+    return 0
+
+
+def _cmd_qualifications_persist(_session: Any, args: argparse.Namespace) -> int:
+    row = gate2.persist_scorecard(args.company_id)
+    if _want_json(args):
+        _print_json(row)
+        return 0
+    print(
+        f"persisted draft {row.get('id')} for company {row.get('company_id')} "
+        f"as {row.get('evaluator_identity')}"
+    )
+    print(
+        f"  score {row.get('overall_score')} · {row.get('qualification_tier')} · "
+        f"review_status={row.get('review_status')}"
+    )
+    print(
+        f"next: a human reviews it with `qualifications show {row.get('id')}`, then "
+        f"`qualifications approve {row.get('id')}` or `qualifications reject {row.get('id')} "
+        "--reason ...`"
+    )
+    return 0
+
+
+def _cmd_qualifications_approve(session: Any, args: argparse.Namespace) -> int:
+    row = gate2.approve(
+        session.client,
+        args.qualification_id,
+        operator_id=session.user_id,
+        note=args.note,
+    )
+    if _want_json(args):
+        _print_json(row)
+        return 0
+    print(
+        f"approved {row.get('id')} for company {row.get('company_id')} "
+        f"({row.get('qualification_tier')}, {row.get('overall_score')}) "
+        f"by {row.get('reviewed_by_human_id')}"
+    )
+    return 0
+
+
+def _cmd_qualifications_reject(session: Any, args: argparse.Namespace) -> int:
+    row = gate2.reject(
+        session.client,
+        args.qualification_id,
+        operator_id=session.user_id,
+        reason=args.reason,
+    )
+    if _want_json(args):
+        _print_json(row)
+        return 0
+    audit = row.get("audit_rejection") or {}
+    print(f"rejected {row.get('id')} for company {row.get('company_id')}")
+    print(f"  reason: {args.reason}")
+    print(
+        f"  attributed by audit_logs row {audit.get('id')} to {audit.get('actor_identity')} "
+        "(the schema forbids a reviewer id on a non-approved row)"
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m operations.cli",
@@ -277,6 +449,35 @@ def build_parser() -> argparse.ArgumentParser:
     qualify.add_argument("company_id")
     qualify.set_defaults(func=_cmd_qualify)
 
+    quals = sub.add_parser("qualifications", help="Human Gate 2 — review persisted scorecards")
+    quals_sub = quals.add_subparsers(dest="action", required=True)
+
+    q_listing = quals_sub.add_parser("list", help="list scorecards (all statuses by default)")
+    q_listing.add_argument("--status", default=None, help="draft|pending_human_review|approved|rejected")
+    q_listing.add_argument("--company-id", default=None)
+    q_listing.add_argument("--limit", type=int, default=50)
+    q_listing.set_defaults(func=_cmd_qualifications_list)
+
+    q_show = quals_sub.add_parser("show", help="show one scorecard and its dimension evidence")
+    q_show.add_argument("qualification_id")
+    q_show.set_defaults(func=_cmd_qualifications_show)
+
+    q_persist = quals_sub.add_parser(
+        "persist", help="score a company and persist the draft as the qualifier agent"
+    )
+    q_persist.add_argument("company_id")
+    q_persist.set_defaults(func=_cmd_qualifications_persist)
+
+    q_approve = quals_sub.add_parser("approve", help="record Gate 2 approval as the operator")
+    q_approve.add_argument("qualification_id")
+    q_approve.add_argument("--note", default=None)
+    q_approve.set_defaults(func=_cmd_qualifications_approve)
+
+    q_reject = quals_sub.add_parser("reject", help="reject a scorecard with a reason")
+    q_reject.add_argument("qualification_id")
+    q_reject.add_argument("--reason", required=True)
+    q_reject.set_defaults(func=_cmd_qualifications_reject)
+
     parser.set_defaults(func=_cmd_whoami)
     return parser
 
@@ -291,11 +492,24 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         return int(args.func(session, args))
+    except gate2.QualificationNotMeasured as exc:
+        print(f"not measured: {exc}", file=sys.stderr)
+        return 2
+    except gate2.QualifierWriteDenied as exc:
+        claim = f" Missing: {exc.missing_claim}." if exc.missing_claim else ""
+        print(f"refused: {exc}{claim}", file=sys.stderr)
+        return 2
+    except gate2.QualificationGateError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 2
     except gate1.Gate1Error as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 2
     except QualificationInputError as exc:
         print(f"cannot qualify: {exc}", file=sys.stderr)
+        return 2
+    except AuthenticationError as exc:
+        print(f"cannot sign in: {exc}", file=sys.stderr)
         return 2
     except EnvironmentGuardError as exc:
         print(f"environment refused: {exc}", file=sys.stderr)
