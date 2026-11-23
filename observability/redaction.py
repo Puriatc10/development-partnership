@@ -61,8 +61,13 @@ _SENSITIVE_KEY_PARTS: tuple[str, ...] = (
     "private_key",
 )
 
-#: ``("bearer", "credential", "control")`` once resolved; see :func:`_rules`.
-_RULES: tuple[Any, Any, Any] | None = None
+#: A bare JWT carries no key name for a ``key=value`` pattern to match, and an operator pasting a
+#: token into a command line is exactly how one ends up in a log line. ``eyJ`` is the base64url of
+#: ``{"``, so the prefix is specific enough not to damage ordinary text.
+_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
+
+#: ``("bearer", "jwt", "credential", "control")`` once resolved; see :func:`_rules`.
+_RULES: tuple[Any, ...] | None = None
 
 #: ``scheme://user:password@host`` — a connection string carries its credential in
 #: the *userinfo*, where no ``key=value`` pattern can see it, and an operator
@@ -75,13 +80,13 @@ _DSN_CREDENTIALS_RE = re.compile(
 )
 
 
-def _rules() -> tuple[Any, Any, Any]:
-    """The three compiled patterns owned by ``outreach.gate``, resolved once."""
+def _rules() -> tuple[Any, ...]:
+    """The shared patterns plus :data:`_JWT_RE`, resolved once."""
     global _RULES
     if _RULES is None:
         from outreach.gate import _BEARER_RE, _CONTROL_RE, _CREDENTIAL_RE
 
-        _RULES = (_BEARER_RE, _CREDENTIAL_RE, _CONTROL_RE)
+        _RULES = (_BEARER_RE, _JWT_RE, _CREDENTIAL_RE, _CONTROL_RE)
     return _RULES
 
 
@@ -103,8 +108,9 @@ def redact(value: Any, *, limit: int = REDACTION_LIMIT) -> str:
     except Exception:  # noqa: BLE001 - an object whose __str__ raises must not break a log line
         return "<unprintable>"
 
-    bearer, credential, control = _rules()
+    bearer, jwt, credential, control = _rules()
     text = bearer.sub("bearer=***", text or "")
+    text = jwt.sub("jwt=***", text)
     text = _DSN_CREDENTIALS_RE.sub(
         lambda match: f"{match.group('scheme')}{match.group('user')}:***@", text
     )

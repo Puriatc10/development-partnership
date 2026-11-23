@@ -61,6 +61,25 @@ def _ident(name: str, what: str) -> str:
     return name
 
 
+_NON_FILTER_PARAMS = frozenset({"select", "order", "limit", "offset"})
+
+
+def _require_filter(
+    table: str, params: Mapping[str, Any] | None, operation: str, allow_all: bool
+) -> None:
+    """Refuse a whole-table write unless the caller says so explicitly.
+
+    Every row the statement would touch is one the caller never named. RLS narrows the damage but
+    does not express intent, so an unfiltered ``patch``/``delete`` is an error, not a convenience.
+    """
+    filters = [key for key in (params or {}) if key not in _NON_FILTER_PARAMS]
+    if not filters and not allow_all:
+        raise DatabaseError(
+            f"{operation} on {table!r} has no filter; pass the row's identifying column "
+            f"(or allow_all=True if every visible row really is meant)"
+        )
+
+
 def _split_top_level(value: str) -> list[str]:
     """Split ``a,'b,c',d`` on commas that are not inside single quotes."""
     parts: list[str] = []
@@ -75,6 +94,11 @@ def _split_top_level(value: str) -> list[str]:
             current = []
         else:
             current.append(char)
+    if quoted:
+        raise DatabaseError(
+            f"unterminated quote in filter list {value!r}: values containing an apostrophe must be "
+            "written as 'O''Brien'; refusing to guess"
+        )
     parts.append("".join(current))
     return [p.strip().strip("'") for p in parts if p.strip()]
 
@@ -278,9 +302,10 @@ class PostgresClient:
         )
         return self._run(query, values)
 
-    def patch(self, table: str, data: Mapping[str, Any], params: Mapping[str, Any] | None = None, prefer: str = "") -> list[dict[str, Any]]:
+    def patch(self, table: str, data: Mapping[str, Any], params: Mapping[str, Any] | None = None, prefer: str = "", *, allow_all: bool = False) -> list[dict[str, Any]]:
         if not data:
             raise DatabaseError("patch requires at least one column")
+        _require_filter(table, params, "patch", allow_all)
         known = self.columns(table)
         unknown = [key for key in data if key not in known]
         if unknown:
@@ -298,7 +323,8 @@ class PostgresClient:
             [*[_bind(v, types.get(key)) for key, v in data.items()], *where_values],
         )
 
-    def delete(self, table: str, params: Mapping[str, Any] | None = None) -> int:
+    def delete(self, table: str, params: Mapping[str, Any] | None = None, *, allow_all: bool = False) -> int:
+        _require_filter(table, params, "delete", allow_all)
         clauses, values = self._where(dict(params or {}))
         query = f"DELETE FROM {_ident(table, 'table')}"
         if clauses:

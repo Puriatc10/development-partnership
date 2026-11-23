@@ -26,7 +26,7 @@
 |---|---|---|
 | Branch / HEAD | `main` @ `447dc94` | `git rev-parse HEAD` |
 | Tracked files | 154 | `git ls-files \| wc -l` |
-| Full suite | **436 collected / 432 passed / 4 skipped / 0 failed** after the database migration | `pytest -q`; the 4 skips are precondition gaps in `tests/db`, not a missing DSN |
+| Full suite | **671 collected / 671 passed / 0 skipped / 0 failed** | `pytest`; `tests/db` includes 11 regression cases for the guard-semantics defect a probe, not a test, first found |
 | Skipped | all six in `tests/db/`, `ERYNDEX_DB_URL` unset | `tests/db/test_security_fixes_db.py:31-33` |
 | Python LOC | 13,647 | `wc -l` over the eight packages |
 | Database | **self-hosted PostgreSQL 17.11** in compose (`eryndex-postgres`, 127.0.0.1:5433) | ADR-0007; `reports/eryndex/migration-to-postgres-execution.md` |
@@ -49,10 +49,10 @@
 
 | ID | Item | Owner | Status | Grade | Evidence / blocker |
 |---|---|---|---|---|---|
-| B1 | Executable DB policy suite | QA | BLOCKED | — | 6 skips, no DSN — `OW-2` |
-| B2 | H-06 composite FK column list | CRM | NOT_STARTED | — | `20261107174129:710,723-728`; proposal only, `OW-6` |
-| B3 | Audit triggers for `companies` + discovery review | CRM | NOT_STARTED | — | triggers exist on 3 tables only (`:1664-1674`) |
-| B4 | Missing constraints (`report_version`, one primary domain, task index) | CRM | NOT_STARTED | — | `:453-466`, `:389-397`, `:1708` |
+| B1 | Executable DB policy suite | QA | **COMPLETED** | live | 13 tests, 0 skips; H-01…H-05 each assert a specific SQLSTATE |
+| B2 | H-06 composite FK column list | CRM | **COMPLETED** | live | `20261123121000_integrity_constraints.sql`; `ON DELETE SET NULL (contact_id)` on both FKs, asserted by `tests/db` |
+| B3 | Audit triggers for `companies` + discovery review | CRM | **COMPLETED** | live | `20261123120000_gate1_attribution_and_audit.sql`; `trg_companies_audit`, `trg_discovery_candidates_audit` (INSERT/UPDATE/DELETE) |
+| B4 | Missing constraints (`report_version`, one primary domain, task index) | CRM | **COMPLETED** | live | `20261123121000` + `20261123130000` (the trigger the one-primary index required) |
 | B5 | One delivery design file | CRM | NOT_STARTED | — | `crm/phase2_delivery_expansion.sql` vs `crm/delivery-governance-expansion.sql` |
 | B6 | H-01…H-05 hardening | CRM | **COMPLETED — applied** | policy | present in `20261114194622:38-222`; execution proof awaits B1 |
 
@@ -74,7 +74,7 @@
 | ID | Item | Owner | Status | Grade | Evidence / blocker |
 |---|---|---|---|---|---|
 | D1 | Crawl4AI live run | Integration | BLOCKED | — | `endpoint_verified=False` (`integrations/crawl4ai/adapter.py:165`) — `OW-4` |
-| D2 | Research executor (company → findings → rows) | Research | NOT_STARTED | — | `agents/researcher/runner.py:135-144` receives research as arguments; no producer exists |
+| D2 | Research executor (company → findings → rows) | Research | **COMPLETED** | live | `research/executor.py` + `scripts/research_run.py`; live run persisted 9 findings and completed the task (`reports/eryndex/evidence/e2e-lifecycle.json`) |
 | D3 | GPT Researcher live path | Research | BLOCKED | — | no LLM/search credentials — `OW-5` |
 | D4 | OpenGTM decision | Orchestrator | BLOCKED | — | AGPL-3.0, no documented discovery route — `OW-3` |
 | D5 | Adapter contract compliance (3 adapters) | Integration | COMPLETED | contract | `test_provider_contract.py`, `test_crawl4ai_adapter_contract.py` |
@@ -95,19 +95,19 @@
 | ID | Item | Owner | Status | Grade | Evidence / blocker |
 |---|---|---|---|---|---|
 | F1 | findings → `QualificationInput` loader | Qualification | **COMPLETED** | live | `qualification/loader.py`; Refokus scores 32.0/100 disqualified from its 13 persisted findings via an operator JWT |
-| F2 | Live scorecard persistence | Qualification | BLOCKED | — | `evaluator_type='agent'` must name the producing agent; persisting from a human session would misattribute. Needs a qualifier identity — `OW-1` |
-| F3 | Gate 2 approve/reject write path | Qualification | NOT_STARTED | — | `orchestration/workflow.py:52-59` models the gate; nothing writes `review_status` |
+| F2 | Live scorecard persistence | Qualification | **COMPLETED** | live | qualifier identity + `operations/qualifications.py:persist_scorecard`; draft persisted and read back |
+| F3 | Gate 2 approve/reject write path | Qualification | **COMPLETED** | live | `qualifications approve`/`reject`; approval recorded the signing operator, tier followed the score |
 | F4 | Scorecard repository contract | Qualification | COMPLETED | contract | 21 tests; draft-only, evidence-per-dimension, human-review preconditions |
 
 ## WS-G — Outreach governance
 
 | ID | Item | Owner | Status | Grade | Evidence / blocker |
 |---|---|---|---|---|---|
-| G1 | Implement `QualificationReader` / `SuppressionReader` / `DraftWriter` | Outreach | NOT_STARTED | — | only fakes, in `tests/test_outreach_gate.py` |
-| G2 | Draft generator grounded in approved evidence | Outreach | NOT_STARTED | — | no drafter module anywhere |
-| G3 | Gate 3 / Gate 4 operator commands | Operations | NOT_STARTED | — | `assert_gate` has zero production call sites |
+| G1 | Implement `QualificationReader` / `SuppressionReader` / `DraftWriter` | Outreach | **COMPLETED** | live | `outreach/adapters.py`; a real draft was created through all three ports |
+| G2 | Draft generator grounded in approved evidence | Outreach | **COMPLETED** | live | `outreach/drafts.py`; deterministic, cites finding UUIDs, refused price/headcount/deadline language by its own guard |
+| G3 | Gate 3 / Gate 4 operator commands | Operations | **COMPLETED** | live | `scripts/outreach_cli.py approve|authorize`; message approved by the operator, authorisation left `sending_status='draft'` |
 | G4 | Eligibility gate (content → qualification → suppression, fail-closed) | Outreach | COMPLETED | unit | `outreach/gate.py:625,903`; 134 tests; adversarial review closed 2 critical / 6 high |
-| G5 | Dispatch unreachable | Outreach | COMPLETED | unit | `dispatch.py:22,33-75`; DB trigger `20261107174129:1062` |
+| G5 | Dispatch unreachable | Outreach | **COMPLETED** | live | `dispatch.py:25,47-75` (no transport, every method raises) and `20261123160000` — transport states now require a `dispatcher` claim that no identity carries, so the database cannot be talked into `sent` either |
 
 ## WS-H — Human operations
 
@@ -121,18 +121,18 @@
 
 | ID | Item | Owner | Status | Grade | Evidence / blocker |
 |---|---|---|---|---|---|
-| I1 | `Runtime`/`TaskSource` over the `tasks` table | Orchestrator | NOT_STARTED | — | claim/transition/complete live inside `agents/researcher/agent.py:35-55,57,190` |
+| I1 | `Runtime`/`TaskSource` over the `tasks` table | Orchestrator | **COMPLETED** | unit + live probe | `orchestration/contracts.py`, `task_source.py` (single-statement CAS); two concurrent claimers → exactly one winner |
 | I2 | Hermes adapter with no business logic | Orchestrator | NOT_STARTED | — | no adapter exists |
-| I3 | Retry / timeout / failure normalisation / escalation | Orchestrator | NOT_STARTED | — | no retry or lease code in `orchestration/` |
+| I3 | Retry / timeout / failure normalisation / escalation | Orchestrator | **COMPLETED** | unit | `orchestration/runtime.py:RetryingRuntime` (bounded retries, per-task timeout, escalation) |
 | I4 | Gate definitions + idempotency keys | Orchestrator | COMPLETED | unit | `orchestration/workflow.py:44-111`, `idempotency.py`; `tests/test_human_gates.py` |
 
 ## WS-J — Reliability and observability
 
 | ID | Item | Owner | Status | Grade | Evidence / blocker |
 |---|---|---|---|---|---|
-| J1 | Run/trace ids persisted per run | Platform | NOT_STARTED | — | `trace_id` never persisted (`contracts/provider.py:79`); `run_id` only stripped for idempotency (`orchestration/idempotency.py:26`) |
-| J2 | Structured logging + shared redaction | Platform | NOT_STARTED | — | printf logs (`agents/researcher/runner.py:37`); discovery logs nothing; redaction only in `outreach/gate.py:283-378` |
-| J3 | Machine-readable run summary | Platform | NOT_STARTED | — | none |
+| J1 | Run/trace ids carried through a run | Platform | **COMPLETED** | live | `observability/run.py`; research emits started/persisted/completed events with one run_id |
+| J2 | Structured logging + shared redaction | Platform | **COMPLETED** | unit | `observability/run.py` (one-line JSON) + `redaction.py` reusing the gate's regexes, plus DSN-userinfo and field-name masking |
+| J3 | Machine-readable run summary | Platform | **COMPLETED** | live | `observability/run.py:run_summary()`; printed by `scripts/research_run.py`, asserted against emitted events |
 
 ## WS-K — Security and access control
 
@@ -147,7 +147,7 @@
 
 | ID | Item | Owner | Status | Grade | Evidence / blocker |
 |---|---|---|---|---|---|
-| L1 | Lifecycle end-to-end run | QA | NOT_STARTED | — | depends on C4, D2, F1, G2 |
+| L1 | Lifecycle end-to-end run | QA | **COMPLETED** | live | `scripts/e2e_lifecycle.py`: Discover → Register → Research → Qualify → Gate 2 → Draft → Gate 3 → Gate 4, dispatch still blocked |
 | L2 | Metrics (precision, coverage, persistence, retries, latency) | QA | NOT_STARTED | — | all unknown |
 | M1 | Environment isolation proof in entry points | QA | IN_REVIEW | unit | operator session (tested, guard runs before sign-in), `scripts/rls_probe.py` (tested pre-flight), legacy `operator_cli` (guarded, untested), runner (guarded). `scripts/discovery_cycle.py` is offline and needs none |
 | M2 | Production readiness assessment | Orchestrator | NOT_STARTED | — | after L1 |

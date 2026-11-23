@@ -158,12 +158,15 @@ _QUALIFICATION_EVIDENCE = {
 
 
 def _insert_scorecard(cur, company_id: str, *, approved: bool) -> str:
-    """Insert a valid scorecard. Must run with an operator's claims (the approval gate).
+    """Create a scorecard the way the platform does: insert as a draft, then approve as a human.
 
-    Approved rows are signed by ``OPERATOR_ID`` because both the trigger and
-    ``chk_lead_qual_review_human_gate`` demand a human reviewer equal to ``auth.uid()``.
+    A scorecard may not be *created* already approved (``fn_enforce_qualification_insert_draft``),
+    and an approval must be a human UPDATE whose reviewer equals ``auth.uid()``
+    (``fn_enforce_lead_qualification_rules``). Seeding an approved row directly now tests a path
+    the product does not have.
     """
     scorecard_id = str(uuid.uuid4())
+    _as_owner(cur)
     cur.execute(
         "insert into lead_qualifications (id, company_id, evaluator_type, evaluator_identity,"
         " overall_score, customer_flow_score, development_demand_score, repeatability_orders_score,"
@@ -171,16 +174,18 @@ def _insert_scorecard(cur, company_id: str, *, approved: bool) -> str:
         " commercial_fit_score, dimension_evidence, qualification_tier, recommended_next_action,"
         " review_status, reviewed_by_human_id, reviewed_at)"
         " values (%s, %s, 'agent', 'hermes-qualifier-v1', 65, 15, 15, 10, 10, 5, 5, 5, %s,"
-        " 'tier_2_prospective', 'Draft the first outreach sequence.', %s, %s, %s)",
-        (
-            scorecard_id,
-            company_id,
-            json.dumps(_QUALIFICATION_EVIDENCE),
-            "approved" if approved else "draft",
-            OPERATOR_ID if approved else None,
-            None,
-        ),
+        " 'tier_2_prospective', 'Draft the first outreach sequence.', 'draft', NULL, NULL)",
+        (scorecard_id, company_id, json.dumps(_QUALIFICATION_EVIDENCE)),
     )
+    if approved:
+        _as_operator(cur)
+        cur.execute(
+            "update lead_qualifications"
+            "   set review_status = 'approved', reviewed_by_human_id = %s,"
+            "       reviewed_at = clock_timestamp()"
+            " where id = %s",
+            (OPERATOR_ID, scorecard_id),
+        )
     return scorecard_id
 
 
@@ -419,12 +424,19 @@ def test_h03_drafting_requires_an_approved_qualification(conn, dev_confirmed):
             _OUTREACH_DRAFT_SQL,
             (company_id, contact_id, "hermes-drafter-v1"),
             sqlstate="42501",
-            message=['new row violates row-level security policy for table "outreach_messages"'],
+            # The precondition is enforced twice: a BEFORE INSERT trigger (which runs before RLS)
+            # and the H-03 policy predicate. Either message names the qualification as the reason;
+            # the test accepts both so it cannot pass on an unrelated refusal.
+            # The trigger runs before RLS, so its message is the one an operator sees. The H-03
+            # policy predicate still exists behind it as defence in depth.
+            message=["no approved, non-disqualified scorecard"],
             label="H-03 draft without an approved qualification",
         )
 
-        # (4) the same statement, now that a human approved a non-disqualified scorecard
-        _as_operator(cur)
+        # (4) the same statement, now that an approved non-disqualified scorecard exists.
+        # Seeded as the owner because a scorecard may only be *created* as a draft: approval is a
+        # separate human UPDATE, which is what the CLI does.
+        _as_owner(cur)
         _insert_scorecard(cur, company_id, approved=True)
         _as_agent(cur, "hermes-drafter-v1", "drafter")
         cur.execute(_OUTREACH_DRAFT_SQL, (company_id, contact_id, "hermes-drafter-v1"))
@@ -471,7 +483,7 @@ def test_h04_second_approved_scorecard_is_rejected(conn, dev_confirmed):
         _as_owner(cur)
         company_id, _domain = _seed_company(cur, lifecycle_stage="qualified")
 
-        _as_operator(cur)
+        _as_owner(cur)
         _insert_scorecard(cur, company_id, approved=True)
         cur.execute(
             "select count(*) from lead_qualifications where company_id = %s and review_status = 'approved'",
@@ -479,22 +491,17 @@ def test_h04_second_approved_scorecard_is_rejected(conn, dev_confirmed):
         )
         assert cur.fetchone()[0] == 1, "the seeded approval is missing; nothing to duplicate"
 
+        # A second scorecard is legal as a draft; approving it is what must collide. Testing it
+        # as an approved INSERT would only prove the (newer) insert-is-draft rule, not H-04.
+        second_id = _insert_scorecard(cur, company_id, approved=False)
+        _as_operator(cur)
         exc = _expect_refused(
             conn,
-            "insert into lead_qualifications (id, company_id, evaluator_type, evaluator_identity,"
-            " overall_score, customer_flow_score, development_demand_score, repeatability_orders_score,"
-            " technical_fit_score, business_size_score, decision_maker_accessibility_score,"
-            " commercial_fit_score, dimension_evidence, qualification_tier, recommended_next_action,"
-            " review_status, reviewed_by_human_id, reviewed_at)"
-            " values (%s, %s, 'agent', 'hermes-qualifier-v1', 65, 15, 15, 10, 10, 5, 5, 5, %s,"
-            " 'tier_2_prospective', 'Draft the first outreach sequence.', 'approved', %s,"
-            " clock_timestamp())",
-            (
-                str(uuid.uuid4()),
-                company_id,
-                json.dumps(_QUALIFICATION_EVIDENCE),
-                OPERATOR_ID,
-            ),
+            "update lead_qualifications"
+            "   set review_status = 'approved', reviewed_by_human_id = %s,"
+            "       reviewed_at = clock_timestamp()"
+            " where id = %s",
+            (OPERATOR_ID, second_id),
             sqlstate="23505",
             message=["duplicate key value violates unique constraint", "uq_lead_qualifications_approved"],
             label="H-04 second approved scorecard",
@@ -504,8 +511,8 @@ def test_h04_second_approved_scorecard_is_rejected(conn, dev_confirmed):
         )
         assert exc.diag.table_name == "lead_qualifications"
 
-        # A second *draft* is still allowed: the index is partial by design.
-        _insert_scorecard(cur, company_id, approved=False)
+        # A second *draft* is still allowed — `second_id` was inserted as one above — because the
+        # index is partial on approval, not a cap of one scorecard per company.
         cur.execute(
             "select count(*) filter (where review_status = 'approved'), count(*)"
             " from lead_qualifications where company_id = %s",

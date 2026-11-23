@@ -18,7 +18,7 @@ D5 old project untouched · D6 three roles
 | Supabase is gone from the runtime | `grep -r integrations.supabase` → no code references; `supabase/` removed; `requirements.txt` has psycopg/argon2/PyJWT and no vendor SDK |
 | Production cannot be reached by omission | `tests/test_environment_guard.py` — local-only in development; a remote host needs `ERYNDEX_ENV=production` *and* an explicit allow-list |
 
-**Suite: 432 passed, 4 skipped, 0 failed.**
+**Suite at the time of this migration: 432 passed, 4 skipped, 0 failed.** Current state (after Gate 2, outreach ports, the runtime, observability and the guard-semantics fix): **671 passed, 0 skipped, 0 failed** across **10 applied migrations**.
 
 ## Phases
 

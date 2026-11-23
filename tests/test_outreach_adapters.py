@@ -372,6 +372,15 @@ def full_db(**over) -> FakeClient:
     tables = {
         "companies": [company_row()],
         "company_domains": [domain_row()],
+        "research_findings": [
+            {
+                "id": fid(index),
+                "company_id": COMPANY,
+                "statement": f"finding {index}",
+                "excerpt": "Portfolio lists three live Webflow builds for named clients.",
+            }
+            for index in range(len(QUALIFICATION_DIMENSIONS))
+        ],
         "contacts": [contact_row()],
         "lead_qualifications": [qualification_row()],
         "outreach_campaigns": [campaign_row()],
@@ -672,6 +681,43 @@ def test_writer_happy_path_stores_a_clean_draft_with_evidence():
     assert row["drafted_by_agent_identity"] == OPERATOR
     assert row["personalization_evidence_ids"] == [fid(index) for index in range(7)]
     assert row["proposed_commercial_model"] == "project_based_wholesale"
+
+
+def test_writer_refuses_a_citation_that_is_not_a_stored_finding():
+    """Shape is not provenance: the writer joins the ids to ``research_findings``."""
+
+    class _Draft:
+        company_id = COMPANY
+        personalization_evidence_ids = (fid(0),)
+
+    db = full_db()
+    writer = PostgresDraftWriter(db, OPERATOR)
+    writer._require_evidence(_Draft())  # a real finding of this company passes
+
+    class _Fabricated:
+        company_id = COMPANY
+        personalization_evidence_ids = (fid(0), str(uuid4()))
+
+    with pytest.raises(DraftPersistenceError) as excinfo:
+        writer._require_evidence(_Fabricated())
+    assert "not findings of company" in str(excinfo.value)
+    assert db.tables["outreach_messages"] == [], "a refused citation must not write a row"
+
+
+def test_writer_refuses_evidence_belonging_to_another_company():
+    class _Foreign:
+        company_id = COMPANY
+        personalization_evidence_ids = (fid(0),)
+
+    db = full_db(
+        research_findings=[
+            {"id": fid(0), "company_id": "77777777-7777-4777-8777-777777777777", "statement": "x", "excerpt": "x"}
+        ]
+    )
+    writer = PostgresDraftWriter(db, OPERATOR)
+    with pytest.raises(DraftPersistenceError) as excinfo:
+        writer._require_evidence(_Foreign())
+    assert "not findings of company" in str(excinfo.value)
 
 
 def test_writer_is_idempotent_for_the_same_slot_and_reports_a_conflict():

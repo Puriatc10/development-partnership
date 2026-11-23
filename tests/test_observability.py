@@ -421,3 +421,12 @@ def test_the_cli_accepts_a_run_id_that_becomes_the_trace():
     assert args.run_id == "trace-abc"
     assert run.trace_id == "trace-abc"
     assert run.run_id != "trace-abc"
+
+def test_a_bare_jwt_is_redacted():
+    """An operator pasting a token on the command line is how one lands in a log line."""
+    from observability.redaction import redact
+
+    token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjNTQ5In0.abc123def456"
+    redacted = redact(f"using jwt {token}")
+    assert token not in redacted
+    assert "jwt=***" in redacted

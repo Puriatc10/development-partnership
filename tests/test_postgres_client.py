@@ -242,3 +242,32 @@ def test_the_claim_payload_never_leaks_between_calls(operator, agent):
         assert agent.get("discovery_candidates", {"select": "id", "id": f"eq.{row['id']}"}) == []
     finally:
         operator.delete("discovery_candidates", {"id": f"eq.{row['id']}"})
+
+# ---------------------------------------------------------------------------
+# Statement discipline: a write must name the rows it intends to touch
+# ---------------------------------------------------------------------------
+
+
+def test_patch_without_a_filter_is_refused_before_it_reaches_the_database(operator):
+    with pytest.raises(DatabaseError) as excinfo:
+        operator.patch("companies", {"city": "Tehran"})
+    assert "no filter" in str(excinfo.value)
+
+
+def test_delete_without_a_filter_is_refused_before_it_reaches_the_database(operator):
+    with pytest.raises(DatabaseError) as excinfo:
+        operator.delete("activities")
+    assert "no filter" in str(excinfo.value)
+
+
+def test_allow_all_still_obeys_rls(operator):
+    """The flag says the caller meant every visible row; the policy decides what is visible."""
+    visible = operator.get("outreach_messages", {"select": "id"})
+    removed = operator.delete("outreach_messages", allow_all=True)
+    assert removed == len(visible)
+
+
+def test_an_unterminated_quote_in_an_in_list_fails_closed(operator):
+    with pytest.raises(DatabaseError) as excinfo:
+        operator.get("companies", {"primary_domain": "in.(o'brien)"})
+    assert "unterminated quote" in str(excinfo.value)

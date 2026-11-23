@@ -1,9 +1,15 @@
-"""Adversarial RLS probes against the platform database, all rolled back per call.
+"""Adversarial RLS probes against the platform database.
 
 Each case builds a client with the claims the policies read, attempts one action, and checks the
 outcome the security model requires. This used to shell out to the Supabase CLI with temporary
 SQL files and a mutable linked-project target; it now runs in process against our own database,
 which is also why the old pre-flight file check is gone: the guard is the connection string.
+
+**The cases are not transactional.** ``PostgresClient`` commits per call by design, so each case
+writes rows and then deletes them; the append-only ``audit_logs`` rows those writes produce stay
+in the ledger, which is the correct outcome for an audit trail. Rows the cases create carry a
+``probe`` marker so leftovers are identifiable. If a case fails mid-way, delete its rows by that
+marker rather than assuming a rollback happened.
 
 Run: python scripts/rls_probe.py
 """

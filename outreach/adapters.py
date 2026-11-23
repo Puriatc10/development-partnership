@@ -670,6 +670,7 @@ class PostgresDraftWriter:
         self._require_contact(draft.contact_id, draft.company_id)
         if draft.campaign_id:
             self._require_campaign(draft.campaign_id)
+        self._require_evidence(draft)
 
         row = self._insert(draft.to_row())
         persisted = self._verify(row, draft)
@@ -678,6 +679,35 @@ class PostgresDraftWriter:
         return persisted
 
     # -- ownership checks --------------------------------------------------
+    def _require_evidence(self, draft: Any) -> None:
+        """Every cited id must be a real ``research_findings`` row for this company.
+
+        The gate can only check that the ids are UUID-shaped; this is the check that makes the
+        citation mean something. Without it a writer could quote an invention and no layer would
+        notice, which is what an audit reproduced against the previous build.
+        """
+        ids = sorted({str(item) for item in draft.personalization_evidence_ids})
+        try:
+            rows = self.client.get(
+                "research_findings",
+                {
+                    "select": "id",
+                    "company_id": f"eq.{draft.company_id}",
+                    "id": f"in.({','.join(ids)})",
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - translated to a typed gate failure
+            raise DraftPersistenceError(
+                f"could not verify the cited evidence for company {draft.company_id}: {exc}"
+            ) from exc
+        found = {str(row.get("id")) for row in (rows or []) if row.get("id")}
+        missing = [item for item in ids if item not in found]
+        if missing:
+            raise DraftPersistenceError(
+                f"{len(missing)} cited evidence id(s) are not findings of company "
+                f"{draft.company_id} (first: {missing[0]}); a draft may only cite stored findings"
+            )
+
     def _require_company(self, company_id: str) -> None:
         row = _single(
             self.client,

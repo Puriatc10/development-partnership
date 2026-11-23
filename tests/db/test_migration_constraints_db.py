@@ -106,12 +106,12 @@ def test_the_signing_operator_can_review_and_the_decision_is_audited(conn):
 
         cur.execute(
             "select actor_type::text, actor_identity, action from audit_logs "
-            "where table_name = 'discovery_candidates' and record_id = %s",
+            "where table_name = 'discovery_candidates' and record_id = %s and action = 'UPDATE'",
             (candidate_id,),
         )
         rows = cur.fetchall()
         assert rows, "a Gate 1 review must leave an audit row"
-        assert rows[0][0] == "human" and rows[0][1] == OPERATOR_ID
+        assert rows[-1][0] == "human" and rows[-1][1] == OPERATOR_ID
 
     conn.rollback()
 
