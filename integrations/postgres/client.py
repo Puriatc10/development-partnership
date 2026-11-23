@@ -100,6 +100,7 @@ class PostgresClient:
         self.claims = dict(claims or {})
         self.search_path = search_path
         self._columns: dict[str, frozenset[str]] = {}
+        self._column_types: dict[str, dict[str, str]] = {}
         self._connection: psycopg.Connection | None = None
 
     # -- connection --------------------------------------------------------
@@ -146,11 +147,13 @@ class PostgresClient:
         with self.connection.transaction():
             with self.connection.cursor() as cur:
                 cur.execute(
-                    "SELECT column_name FROM information_schema.columns "
+                    "SELECT column_name, data_type, udt_name FROM information_schema.columns "
                     "WHERE table_schema = %s AND table_name = %s",
                     (self.search_path, table),
                 )
-                names = frozenset(row[0] for row in cur.fetchall())
+                rows = cur.fetchall()
+                names = frozenset(row[0] for row in rows)
+                self._column_types[table] = {row[0]: (row[2] or row[1]) for row in rows}
         if not names:
             raise DatabaseError(f"table {table!r} does not exist in schema {self.search_path!r}")
         self._columns[table] = names
@@ -258,6 +261,7 @@ class PostgresClient:
             raise DatabaseError(f"table {table!r} has no column(s) {unknown}")
 
         placeholders = ", ".join("%s" for _ in keys)
+        types = self._column_types.get(table, {})
         values: list[Any] = []
         for row in rows:
             missing = [key for key in keys if key not in row]
@@ -266,7 +270,7 @@ class PostgresClient:
                 raise DatabaseError(
                     f"row in {table!r} is missing {missing}; every row must carry the same columns"
                 )
-            values.extend(_bind(row[key]) for key in keys)
+            values.extend(_bind(row[key], types.get(key)) for key in keys)
 
         query = (
             f"INSERT INTO {_ident(table, 'table')} ({', '.join(keys)}) "
@@ -288,7 +292,11 @@ class PostgresClient:
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += " RETURNING *"
-        return self._run(query, [*[_bind(v) for v in data.values()], *where_values])
+        types = self._column_types.get(table, {})
+        return self._run(
+            query,
+            [*[_bind(v, types.get(key)) for key, v in data.items()], *where_values],
+        )
 
     def delete(self, table: str, params: Mapping[str, Any] | None = None) -> int:
         clauses, values = self._where(dict(params or {}))
@@ -322,8 +330,18 @@ def _claims_json(claims: Mapping[str, Any]) -> str:
     return json.dumps(dict(claims), default=str)
 
 
-def _bind(value: Any) -> Any:
-    """Adapt Python containers to jsonb; everything else is passed through."""
-    if isinstance(value, (dict, list)):
+def _bind(value: Any, column_type: str | None = None) -> Any:
+    """Adapt a Python value to the column it is going into.
+
+    The first version of this sent every list to ``Jsonb``, which is wrong for the platform's
+    array columns — ``disqualification_reasons text[]`` and ``personalization_evidence_ids uuid[]``
+    both failed with 42804 the first time a real scorecard was persisted. A list therefore becomes
+    ``Jsonb`` only when the column is json/jsonb; otherwise psycopg adapts it to a native array.
+    """
+    if isinstance(value, dict):
         return Jsonb(value)
+    if isinstance(value, list):
+        if column_type in {"json", "jsonb"}:
+            return Jsonb(value)
+        return value
     return value

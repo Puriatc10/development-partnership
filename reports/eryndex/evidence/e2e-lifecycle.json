@@ -1,0 +1,81 @@
+{
+  "company_id": "e99255fa-2d26-4a5c-9d89-4eec2391ef33",
+  "candidate_id": "14415d02-0348-4561-a34e-4b72eca58786",
+  "task_id": "20880719-2747-4284-91d9-d51c25b3d003",
+  "report_id": "ec9f2549-06c1-492a-8a9c-022a2c7f3dc9",
+  "qualification_id": "071742b7-9028-4406-bebf-ae72495b070f",
+  "contact_id": "50dca23f-d82a-4920-992a-29cdc8a04819",
+  "campaign_id": "f6fe1110-52ce-44a2-b84c-23b79bec1547",
+  "message_id": "54640348-51b0-4065-8fbf-ac05be3fa22a",
+  "steps": [
+    {
+      "step": "candidate.staged",
+      "candidate_id": "14415d02-0348-4561-a34e-4b72eca58786",
+      "domain": "e2e-6f113842.example.com"
+    },
+    {
+      "step": "company.registered",
+      "company_id": "e99255fa-2d26-4a5c-9d89-4eec2391ef33",
+      "created": true,
+      "duplicate": false
+    },
+    {
+      "step": "research.persisted",
+      "report_id": "ec9f2549-06c1-492a-8a9c-022a2c7f3dc9",
+      "findings": 9,
+      "task_status": "completed"
+    },
+    {
+      "step": "qualification.persisted",
+      "qualification_id": "071742b7-9028-4406-bebf-ae72495b070f",
+      "score": "52.00",
+      "review_status": "draft"
+    },
+    {
+      "step": "qualification.approved",
+      "review_status": "approved",
+      "reviewed_by": "c549b7f9-70a8-4919-b987-aff7d692ea1b",
+      "tier": "tier_3_deferred"
+    },
+    {
+      "step": "company.qualified",
+      "id": "e99255fa-2d26-4a5c-9d89-4eec2391ef33",
+      "lifecycle_stage": "qualified",
+      "qualification_tier": "tier_3_deferred"
+    },
+    {
+      "step": "recipient.ready",
+      "contact_id": "50dca23f-d82a-4920-992a-29cdc8a04819",
+      "campaign_id": "f6fe1110-52ce-44a2-b84c-23b79bec1547"
+    },
+    {
+      "step": "draft.created",
+      "exit": 0,
+      "message_id": "54640348-51b0-4065-8fbf-ac05be3fa22a",
+      "allowed_because": "qualified, human-approved, evidence-backed, not suppressed (reader checked: contacts.is_opted_out, companies.is_suppressed, company_domains, suppression_registry)"
+    },
+    {
+      "step": "draft.approved",
+      "exit": 0,
+      "detail": "{\n  \"approval_status\": \"approved\",\n  \"approved_at\": \"2026-11-23 17:21:43.330035+00:00\",\n  \"approved_by_human_id\": \"c549b7f9-70a8-4919-b987-aff7d692ea1b\",\n  \"dispatch\": \"disabled\",\n  \"message_id\": \"546"
+    },
+    {
+      "step": "dispatch.authorized",
+      "exit": 0,
+      "detail": "{\n  \"authorisation_activity_id\": \"a41aae03-7768-41de-b614-42270268ed47\",\n  \"authorised_by\": \"c549b7f9-70a8-4919-b987-aff7d692ea1b\",\n  \"authorized_at\": \"2026-11-23T17:21:43.959978+00:00\",\n  \"dispatch\":"
+    },
+    {
+      "step": "dispatch.blocked",
+      "dispatch_disabled": true
+    },
+    {
+      "step": "message.final",
+      "id": "54640348-51b0-4065-8fbf-ac05be3fa22a",
+      "approval_status": "approved",
+      "sending_status": "draft",
+      "channel": "email",
+      "sequence_step": 1,
+      "evidence_count": 6
+    }
+  ]
+}
