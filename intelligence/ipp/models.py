@@ -75,8 +75,15 @@ class Finding:
 
     Mirrors a row of ``research_findings`` (crm/schema.sql L481-499). The engine
     validates the check constraint ``chk_verified_fact_requires_evidence``
-    itself (see ``engine._validate_findings``) so an invalid finding can never
+    itself (see ``engine._validate_input``) so an invalid finding can never
     reach the database through a scorecard.
+
+    ``excerpt`` and ``source_url`` are provenance *payload*, not scoring input.
+    They carry the verbatim quoted text and the page it was quoted from so the
+    persisted ``dimension_evidence`` can cite what a reviewer should read; no
+    anchor rule, confidence rule, coverage count or disqualifier inspects them,
+    which is why two findings that differ only here score identically
+    (``tests/test_evidence_identity.py``).
     """
 
     finding_id: str
@@ -86,6 +93,11 @@ class Finding:
     statement: str
     evidence_url: Optional[str] = None
     source_key: Optional[str] = None
+    #: Verbatim text from the source page (``research_findings.evidence_excerpt``).
+    excerpt: Optional[str] = None
+    #: Canonical page the excerpt was taken from, when it differs from
+    #: ``evidence_url`` (e.g. a roster page citing one specific case study).
+    source_url: Optional[str] = None
 
     def __post_init__(self) -> None:
         for name in ("finding_id", "category", "finding_type", "confidence", "statement"):
@@ -144,11 +156,16 @@ class DimensionScore:
         * trigger ``fn_enforce_lead_qualification_rules`` L1279-1299, which
           raises unless ``dimension_evidence -> <dim> ->> 'evidence'`` is
           non-null for every dimension score greater than zero.
+
+        ``excerpt``/``source_url`` come from the finding's own provenance fields
+        when present and fall back to its statement/``evidence_url`` otherwise.
+        Rendering is the only thing they touch: the score, its confidence and
+        the citations are decided before this method is called.
         """
         by_id = {f.finding_id: f for f in findings}
         cited = [by_id[i] for i in self.evidence_refs if i in by_id]
-        excerpt = cited[0].statement if cited else None
         first = cited[0] if cited else None
+        excerpt = (first.excerpt or first.statement) if first else None
 
         return {
             "score": round(self.points_awarded, 2),
@@ -159,7 +176,7 @@ class DimensionScore:
                 else (self.rationale if self.points_awarded > 0 else None)
             ),
             "finding_ids": list(self.evidence_refs),
-            "source_url": first.evidence_url if first else None,
+            "source_url": (first.source_url or first.evidence_url) if first else None,
             "excerpt": excerpt,
             "finding_type": first.finding_type if first else None,
             "confidence": self.confidence,

@@ -162,6 +162,11 @@ def findings_from_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[Finding, ...]
                 confidence=str(row.get("confidence") or "unverified"),
                 statement=str(row["statement"]),
                 evidence_url=(str(row["evidence_url"]) if row.get("evidence_url") else None),
+                # The engine now carries the source quote separately from the statement; scoring
+                # ignores both, but the persisted evidence record needs the real quote, not prose
+                # the agent wrote about it.
+                excerpt=(str(row["evidence_excerpt"]) if row.get("evidence_excerpt") else None),
+                source_url=(str(row["evidence_url"]) if row.get("evidence_url") else None),
                 source_key=(str(row["evidence_excerpt"]) if row.get("evidence_excerpt") else None),
             )
         )

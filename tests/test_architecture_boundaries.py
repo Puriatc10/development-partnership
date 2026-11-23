@@ -19,6 +19,16 @@ FORBIDDEN = {
     "contracts": {"agents", "orchestration", "integrations", "intelligence", "requests"},
     "integrations": {"agents", "orchestration", "intelligence"},
     "intelligence": {"agents", "orchestration"},
+    # ADR-0001: `agents/*` may import contracts, integrations and intelligence —
+    # never orchestration, which is what drives agents, not the other way round.
+    # psycopg is banned because `integrations.postgres` is the only sanctioned
+    # database path: it is where SET LOCAL ROLE and the claims live, so a direct
+    # driver import anywhere else silently bypasses Row Level Security.
+    "agents": {"orchestration", "psycopg"},
+    # ADR-0001: `orchestration/*` may import contracts (and agent entry points).
+    # It composes workers; it does not reach into adapters or scoring itself, and
+    # it receives its TaskSource client by injection rather than importing one.
+    "orchestration": {"integrations", "intelligence", "psycopg"},
 }
 
 
@@ -53,6 +63,28 @@ def test_inner_layer_does_not_import_outer_layer(layer: str):
         if bad:
             violations.append(f"{path.relative_to(REPO)} imports {sorted(bad)}")
     assert not violations, "Layering violated:\n" + "\n".join(violations)
+
+
+def test_the_exported_runtime_layers_are_covered():
+    """`agents/` and `orchestration/` used to be exempt; keep them in the rule set."""
+    missing = {"agents", "orchestration"} - set(FORBIDDEN)
+    assert not missing, f"layers with no import rule: {sorted(missing)}"
+
+
+def test_every_ruled_layer_actually_contains_python():
+    """A rule for a directory with no modules under it passes without checking anything."""
+    empty = [layer for layer in FORBIDDEN if not python_files(layer)]
+    assert not empty, f"import rules are vacuous for {sorted(empty)}"
+
+
+def test_module_imports_reads_what_it_claims_to(tmp_path):
+    """Guard the reader itself: if it stopped seeing imports, every rule would pass."""
+    sample = tmp_path / "sample.py"
+    sample.write_text(
+        "import orchestration\nfrom integrations.postgres import client\nfrom . import relative\n",
+        encoding="utf-8",
+    )
+    assert module_imports(sample) == {"orchestration", "integrations"}
 
 
 def test_contracts_has_no_third_party_imports():

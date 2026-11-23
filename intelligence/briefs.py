@@ -103,6 +103,7 @@ def build_research_brief(
                 "confidence (high|medium|low|unverified)",
                 "evidence_url",
                 "evidence_excerpt",
+                "finding_id (the persisted research_findings UUID, when the finding already exists)",
             ],
             "rules": [
                 "verified_fact requires evidence_url and confidence high|medium",

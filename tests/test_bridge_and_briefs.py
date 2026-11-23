@@ -8,7 +8,12 @@ from __future__ import annotations
 
 import pytest
 
-from intelligence.bridge import EvidenceContractError, findings_from_evidence, score_candidate
+from intelligence.bridge import (
+    EvidenceContractError,
+    bridge_evidence,
+    findings_from_evidence,
+    score_candidate,
+)
 from intelligence.briefs import DEFAULT_PRIORITY, brief_questions, build_research_brief
 from intelligence.ipp import QualificationScorecard
 
@@ -78,6 +83,22 @@ def test_evidence_converts_to_findings():
     findings = findings_from_evidence(EVIDENCE)
     assert [f.finding_id for f in findings] == ["f1", "f2"]
     assert findings[0].evidence_url == "https://gamma.dev/work"
+    # the source excerpt is carried, not dropped on the hop into the engine
+    assert findings[0].excerpt == "Our work for ..."
+    assert findings[1].excerpt is None
+
+
+def test_bindings_report_a_minted_id_instead_of_hiding_it():
+    binding = bridge_evidence([{k: v for k, v in EVIDENCE[0].items() if k != "finding_id"}])
+    assert binding.findings[0].finding_id == "evidence-0"
+    assert binding.has_synthetic_ids is True
+    with pytest.raises(EvidenceContractError):
+        binding.require_real_ids()
+
+
+def test_brief_contract_asks_for_the_persisted_finding_id():
+    fields = build_research_brief(CANDIDATE)["output_contract"]["fields"]
+    assert any(field.startswith("finding_id") for field in fields)
 
 
 def test_unclassifiable_evidence_is_refused_not_defaulted():
