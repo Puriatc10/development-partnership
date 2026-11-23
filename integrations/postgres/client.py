@@ -260,6 +260,32 @@ class PostgresClient:
         return fragment, values
 
     # -- operations --------------------------------------------------------
+    def rpc(
+        self, function: str, params: Mapping[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Call a database function by name, with named arguments.
+
+        Why this exists at all: a few transitions are only legal *inside* a function — a manual
+        Gmail send must set five columns, satisfy a trigger that no client may satisfy directly,
+        and write an activity row in the same transaction. Expressing that as a table write would
+        hand every caller the ability to fake it, so the write lives in SQL and the client only
+        invokes it.
+
+        Names are validated and every value is bound, as everywhere else here; ``SELECT * FROM``
+        rather than ``(f(...)).*`` is deliberate, because expanding a volatile function in a target
+        list evaluates it once per output column — which would record a manual send twice.
+        """
+        _ident(function, "function")
+        args = dict(params or {})
+        for key in args:
+            _ident(key, "argument")
+        names = list(args)
+        if names:
+            call = f"{function}(" + ", ".join(f"{name} => %s" for name in names) + ")"
+        else:
+            call = f"{function}()"
+        return self._run(f"SELECT * FROM {call}", [args[name] for name in names])
+
     def get(self, table: str, params: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
         params = dict(params or {})
         selection = self._select_list(table, params.get("select"))

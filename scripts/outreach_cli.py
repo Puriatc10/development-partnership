@@ -1,17 +1,28 @@
-"""Draft, list, show, approve and authorise outreach messages. It cannot send.
+"""Draft, list, show, approve, authorise, hand off and record-a-manual-send for outreach.
 
-Five subcommands, three of them read-only:
+Seven subcommands, four of them read-only:
 
 * ``draft``     — run the eligibility gate, render a deterministic draft, persist it;
 * ``list``      — the drafts filed under one company;
 * ``show``      — one message, in full;
 * ``approve``   — Gate G3: an operator marks a draft approved (a human action);
-* ``authorize`` — Gate G4: record the dispatch authorisation decision.
+* ``authorize`` — Gate G4: record the dispatch authorisation decision;
+* ``export``    — render an approved message for a human to send by hand (records nothing);
+* ``mark-sent`` — record that a human did send it, with the mailbox's message id.
 
 ``authorize`` records a decision and stops there. Dispatch does not exist in this
 build: ``outreach.dispatch`` raises unconditionally and this script does not
 import it — not to ask whether dispatch is available, not to print its state.
 The command says so in its output because the absence is the point.
+
+``export`` and ``mark-sent`` close the loop the other way round, without adding a
+transport: a human pastes an approved message into Gmail, and then tells the
+platform what they did. ``export`` writes an .eml or prints a copy-ready block and
+records nothing at all; ``mark-sent`` calls ``fn_record_manual_send``, which
+requires a human operator, an approved message and a non-blank external id, and
+which writes the state change and its activity row in one transaction. Neither
+path can transmit: there is no SMTP import anywhere in this repository, and
+``tests/test_outreach_handoff.py`` asserts that the renderer is pure.
 
 Who is recorded as the drafter
 ------------------------------
@@ -71,6 +82,12 @@ from outreach.adapters import (  # noqa: E402
     PostgresSuppressionReader,
 )
 from outreach.drafts import DraftGenerationError, render_draft, template_for  # noqa: E402
+from outreach.handoff import (  # noqa: E402
+    SENDER_MAILBOX,
+    HandoffRefused,
+    render_email_handoff,
+    to_eml,
+)
 from outreach.gate import (  # noqa: E402
     DraftOutcome,
     DraftRejected,
@@ -645,6 +662,174 @@ def _cmd_authorize(session: Any, args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# export (hand off to a human) / mark-sent (record what the human did)
+# ---------------------------------------------------------------------------
+
+EXPORT_COLUMNS = (
+    "id,company_id,contact_id,channel,approval_status,sending_status,sent_at,subject,body,"
+    "sent_via,external_message_id"
+)
+
+MARK_SENT_COLUMNS = (
+    "id,approval_status,sending_status,sent_at,sent_via,external_message_id,sent_recorded_by"
+)
+
+
+def _handoff_row(session: Any, args: argparse.Namespace) -> dict[str, Any]:
+    """Load the message and its recipient address, as the operator sees them.
+
+    The address lives on ``contacts``, not on the message, and it is read here rather than accepted
+    from the command line: a handoff addressed to whatever the caller typed is not a handoff of the
+    message the database approved.
+    """
+    row = _one(session.client, MESSAGE_TABLE, args.message_id, EXPORT_COLUMNS, "message")
+    contact_id = str(row.get("contact_id") or "")
+    contact = _one(
+        session.client, "contacts", contact_id, "id,email,full_name,first_name,last_name", "contact"
+    )
+    return {**row, "to": contact.get("email"), "contact_name": contact.get("full_name")}
+
+
+def _cmd_export(session: Any, args: argparse.Namespace) -> int:
+    """Render an approved message for a human to send. Reads only; records nothing.
+
+    Argument refusals come before the database read, because a bad ``--out`` has nothing to do with
+    the message. The approval check is *not* here — it lives in ``outreach.handoff`` so it applies to
+    every caller, not just to this command.
+    """
+    path = Path(args.out) if args.out else None
+    if path is not None:
+        if path.suffix.lower() != ".eml":
+            raise OutreachError(
+                f"--out {str(path)!r} does not end in .eml; this command writes an RFC 822 file "
+                "that a mail client can open. Use a name like out/message.eml, or drop --out to "
+                "print the copy-ready block instead."
+            )
+        if path.exists() and not args.force:
+            raise OutreachError(
+                f"{path} already exists; refusing to overwrite a file this command did not create "
+                "in this run. Pass --force to replace it."
+            )
+
+    row = _handoff_row(session, args)
+    handoff: dict[str, Any] = {
+        "message_id": row.get("id"),
+        "to": row.get("to"),
+        "subject": row.get("subject"),
+        "sender_mailbox": SENDER_MAILBOX,
+        "recorded": "nothing",
+        "dispatch": "disabled",
+    }
+
+    if path is not None:
+        payload = to_eml(row)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        handoff |= {"status": "exported", "path": str(path), "bytes": len(payload)}
+    else:
+        handoff |= {"status": "rendered", "block": render_email_handoff(row)}
+
+    if args.json:
+        _emit_json(handoff)
+        return 0
+    if path is not None:
+        print(f"wrote {handoff['path']} ({handoff['bytes']} bytes)")
+        print(f"  to      : {handoff['to']}")
+        print(f"  subject : {handoff['subject']}")
+        print(f"  from    : {SENDER_MAILBOX} (you send it, in Gmail)")
+    else:
+        print(handoff["block"], end="")
+    print("recorded: nothing — export only reads; nothing was stored and nothing was transmitted")
+    print(DISPATCH_STATE)
+    return 0
+
+
+def _cmd_mark_sent(session: Any, args: argparse.Namespace) -> int:
+    """Record a send the operator performed by hand, then read the row back and report it.
+
+    The write is a function call, not a table update, because the five conditions and the activity
+    row have to hold together in one transaction. What is confirmed here is the database's answer,
+    not the request: if the columns did not land, this raises instead of printing success.
+    """
+    external = (args.external_id or "").strip()
+    if not external:
+        raise OutreachError(
+            "--external-id is blank; paste the Message-ID (or thread id) Gmail shows for the "
+            "message you actually sent, so the record can be checked against the mailbox. "
+            "Nothing was recorded."
+        )
+    note = (args.note or "").strip() or None
+
+    try:
+        rows = session.client.rpc(
+            "fn_record_manual_send",
+            {"p_message": args.message_id, "p_external_id": external, "p_note": note},
+        )
+    except Exception as exc:  # noqa: BLE001 - see below
+        # This script must not import the data-access layer (it never builds a client — another
+        # test asserts that), so a database refusal is recognised by the SQLSTATE it carries rather
+        # than by its class. Anything without a `code` is a bug and is re-raised untouched.
+        code = getattr(exc, "code", None)
+        if code is None:
+            raise
+        detail = getattr(exc, "message", None) or str(exc)
+        raise OutreachError(f"{detail} Nothing was recorded. [{code}]") from exc
+    if not isinstance(rows, list) or len(rows) != 1:
+        count = len(rows) if isinstance(rows, list) else "an unusable number of"
+        raise OutreachError(
+            f"fn_record_manual_send returned {count} rows for message {args.message_id}; "
+            "exactly one was expected, so the send was not confirmed. Re-run with --json "
+            "to inspect."
+        )
+
+    stored = _one(session.client, MESSAGE_TABLE, args.message_id, MARK_SENT_COLUMNS, "message")
+    if stored.get("sending_status") != "sent" or stored.get("sent_via") != "manual_gmail":
+        raise OutreachError(
+            f"the database does not show the manual send: sending_status="
+            f"{stored.get('sending_status')!r}, sent_via={stored.get('sent_via')!r}. The record is "
+            "not trustworthy; check the activity trail before retrying."
+        )
+    if str(stored.get("sent_recorded_by") or "") != session.user_id:
+        raise OutreachError(
+            f"the recorded sender is {stored.get('sent_recorded_by')!r}, not the signed-in "
+            f"operator {session.user_id}; refusing to report this as your send."
+        )
+    if str(stored.get("external_message_id") or "") != external:
+        raise OutreachError(
+            f"the stored external id is {stored.get('external_message_id')!r}, not {external!r}; "
+            "the record does not match what was sent."
+        )
+
+    result = {
+        "status": "recorded",
+        "message_id": stored.get("id"),
+        "approval_status": stored.get("approval_status"),
+        "sending_status": stored.get("sending_status"),
+        "sent_at": stored.get("sent_at"),
+        "sent_via": stored.get("sent_via"),
+        "external_message_id": stored.get("external_message_id"),
+        "sent_recorded_by": stored.get("sent_recorded_by"),
+        "note_recorded": note is not None,
+        "recorded": "manual send (activity trail, same transaction)",
+        "dispatch": "disabled",
+    }
+    if args.json:
+        _emit_json(result)
+        return 0
+    print(f"recorded manual send for message {result['message_id']}")
+    print(f"  recorded by     : {result['sent_recorded_by']}")
+    print(f"  sending_status  : {result['sending_status']}")
+    print(f"  sent_via        : {result['sent_via']}")
+    print(f"  external id     : {result['external_message_id']}")
+    print(f"  sent_at         : {result['sent_at']}")
+    print(f"  from            : {SENDER_MAILBOX} (sent by hand, not by the platform)")
+    trail = "written in the same transaction"
+    print(f"  activity        : {trail}{' (with your note)' if note else ''}")
+    print(DISPATCH_STATE)
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Parser / entry point
 # ---------------------------------------------------------------------------
 
@@ -693,6 +878,34 @@ def build_parser() -> argparse.ArgumentParser:
     authorize.add_argument("message_id")
     authorize.set_defaults(func=_cmd_authorize)
 
+    export = sub.add_parser(
+        "export",
+        help="render an approved message for a human to send by hand (records nothing)",
+    )
+    export.add_argument("message_id")
+    export.add_argument(
+        "--out",
+        default=None,
+        help="write an .eml here instead of printing the copy-ready block",
+    )
+    export.add_argument(
+        "--force", action="store_true", help="replace an --out file that already exists"
+    )
+    export.set_defaults(func=_cmd_export)
+
+    mark_sent = sub.add_parser(
+        "mark-sent",
+        help="record that a human sent an approved message by hand, with the mailbox's id",
+    )
+    mark_sent.add_argument("message_id")
+    mark_sent.add_argument(
+        "--external-id",
+        required=True,
+        help="Message-ID or thread id Gmail shows for the message that was sent",
+    )
+    mark_sent.add_argument("--note", default=None, help="recorded on the activity trail")
+    mark_sent.set_defaults(func=_cmd_mark_sent)
+
     return parser
 
 
@@ -731,6 +944,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     except LookupError as exc:
         print(f"not found: {exc}", file=sys.stderr)
+        return 1
+    except HandoffRefused as exc:
+        print(f"cannot hand off: {exc}", file=sys.stderr)
         return 1
     except OutreachError as exc:
         print(f"refused: {exc}", file=sys.stderr)
