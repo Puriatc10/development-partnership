@@ -283,7 +283,7 @@ class SupabaseCandidateSink:
                     raise StagingUnavailable(
                         "discovery_candidates is not visible to this identity. The migration that "
                         "creates it is applied in Development "
-                        "(supabase/migrations/20261115212728_discovery_candidates.sql), so this is "
+                        "(db/migrations/20261115212728_discovery_candidates.sql), so this is "
                         "either a missing table grant, a PostgREST schema-cache reload, or a "
                         "different project — not a pending migration. Use JsonlOutboxSink only for "
                         "an offline exercise."

@@ -14,13 +14,13 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
-DEPLOYED = REPO / "supabase" / "migrations" / "20261107174129_core_crm_schema.sql"
-# Applied: a 14-digit version is what the CLI enumerates as a migration. Presence here
-# is a *claim of application*; the remote history (`supabase migration list --remote`)
-# is the only authority, and a file must not sit here before it is applied.
-PENDING = REPO / "supabase" / "migrations" / "20261114194622_hardening_batch1.sql"
-DISCOVERY = REPO / "supabase" / "migrations" / "20261115212728_discovery_candidates.sql"
-PENDING_DIR = REPO / "supabase" / "migrations" / "pending"
+# Migrations now live in db/migrations and are applied by scripts/db_migrate.py, which
+# records (version, sha256) in public.schema_migrations. That ledger is the authority on
+# what has run; the file's presence here is still a claim of intent, not proof.
+DEPLOYED = REPO / "db" / "migrations" / "20261107174129_core_crm_schema.sql"
+PENDING = REPO / "db" / "migrations" / "20261114194622_hardening_batch1.sql"
+DISCOVERY = REPO / "db" / "migrations" / "20261115212728_discovery_candidates.sql"
+PENDING_DIR = REPO / "db" / "migrations" / "pending"
 
 
 @pytest.fixture(scope="module")
@@ -31,9 +31,9 @@ def sql() -> str:
 def test_applied_migrations_are_staged_with_valid_versions():
     """A 14-digit prefix is what the CLI enumerates; `migration list --remote` decides.
 
-    Both migrations have been applied and verified in Development, so both files live in
-    `supabase/migrations/` with versions that sort after the schema they follow, and
-    nothing is left in `pending/` where a future `db push` could pick it up.
+    Both migrations are applied, so both files live in `db/migrations/` with versions that
+    sort after the schema they follow, and nothing is left in a `pending/` directory where a
+    runner could pick it up
     """
     for path, after in ((PENDING, "20261107174129"), (DISCOVERY, "20261114194622")):
         assert path.exists(), f"applied migration is missing: {path.name}"

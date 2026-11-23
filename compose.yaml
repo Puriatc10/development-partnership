@@ -1,0 +1,57 @@
+# Eryndex — local platform stack
+#
+# One Postgres, our own roles, our own volume. No PostgREST, no GoTrue: the application talks
+# to this database in process (see docs/MIGRATION_TO_SELF_HOSTED_POSTGRES.md).
+#
+#   docker compose up -d
+#   python scripts/db_migrate.py --status
+#   python scripts/db_migrate.py
+#
+# The port is bound to 127.0.0.1 on purpose: this database holds CRM data and must never be
+# reachable from the network by default.
+
+name: eryndex
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: eryndex-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${ERYNDEX_DB_NAME:-eryndex}
+      POSTGRES_USER: ${ERYNDEX_DB_SUPERUSER:-eryndex_owner}
+      POSTGRES_PASSWORD: ${ERYNDEX_DB_SUPERUSER_PASSWORD:?set ERYNDEX_DB_SUPERUSER_PASSWORD in .env}
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+      # Deterministic collation for the text comparisons the policies rely on.
+      LANG: C.UTF-8
+    ports:
+      - "127.0.0.1:${ERYNDEX_DB_PORT:-5433}:5432"
+    volumes:
+      - eryndex-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB -h 127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+
+  # Opt-in maintenance shell: `docker compose --profile tools run --rm psql`
+  psql:
+    image: postgres:17-alpine
+    profiles: ["tools"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${ERYNDEX_DB_SUPERUSER_PASSWORD:?set ERYNDEX_DB_SUPERUSER_PASSWORD in .env}
+      PGHOST: postgres
+      PGUSER: ${ERYNDEX_DB_SUPERUSER:-eryndex_owner}
+      PGDATABASE: ${ERYNDEX_DB_NAME:-eryndex}
+    entrypoint: ["psql"]
+    command: ["-v", "ON_ERROR_STOP=1"]
+
+volumes:
+  eryndex-pgdata:
+    name: eryndex-pgdata
