@@ -52,6 +52,23 @@ OPERATOR_CLAIMS = {
 }
 
 
+@pytest.fixture(autouse=True)
+def cleanup_contract_rows():
+    """Remove rows this module created, as the owner.
+
+    Not as the agent: the discovery policies have no DELETE clause, so an agent's delete matches
+    zero rows and silently succeeds — correct behaviour (agents must not remove evidence), and the
+    reason cleanup cannot be done through the client under test.
+    """
+    yield
+    ids = [("source_name", "eq.contract_test"), ("source_name", "eq.rls_probe")]
+    with psycopg.connect(DSN, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            for column, value in ids:
+                cur.execute(f"DELETE FROM discovery_candidates WHERE {column} = %s", (value[3:],))
+            cur.execute("DELETE FROM companies WHERE discovery_source IN ('contract_test', 'rls_probe')")
+
+
 @pytest.fixture()
 def operator() -> Iterator[PostgresClient]:
     client = PostgresClient(DSN, role="authenticated", claims=OPERATOR_CLAIMS)

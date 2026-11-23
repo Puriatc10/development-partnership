@@ -2,7 +2,7 @@
 
 The engine lives in ``intelligence.ipp`` and is frozen. This package is only the seam that
 was missing — reading a company's own ``research_findings``, scoring them, and handing the
-draft to Human Gate 2 through ``integrations.supabase.qualification_repository``.
+draft to Human Gate 2 through ``integrations.postgres.qualification_repository``.
 """
 
 from __future__ import annotations

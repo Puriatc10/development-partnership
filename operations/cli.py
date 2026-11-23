@@ -23,7 +23,7 @@ from typing import Any, Mapping, Sequence
 import requests
 
 from contracts.errors import EnvironmentGuardError
-from integrations.supabase.client import PostgrestError
+from integrations.postgres.client import PostgrestError
 from qualification.loader import QualificationInputError
 
 from . import candidates as gate1

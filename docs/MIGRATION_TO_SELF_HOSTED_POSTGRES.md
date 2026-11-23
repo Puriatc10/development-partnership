@@ -1,6 +1,9 @@
 # Migration plan — Supabase → self-hosted PostgreSQL (Docker Compose)
 
-**Status:** proposal, awaiting owner approval. **No code has been changed.**
+**Status:** **implemented.** Owner approved D1–D6 on 2026-11-23; the migration ran end to end and
+is recorded in `reports/eryndex/migration-to-postgres-execution.md` and ADR-0007. The plan below is
+kept as written (proposal form) so the decisions and their reasoning remain legible; where the
+implementation differs, the execution report says so.
 **Scope:** replace Supabase as the platform's database and identity provider with PostgreSQL 17
 running in Docker Compose on this workstation (development), with a path to any host later.
 **Data:** not migrated. The existing Supabase Development project is left untouched and

@@ -70,10 +70,11 @@ def test_contracts_has_no_third_party_imports():
 
 
 def test_adapters_never_write_to_the_crm():
-    """A provider adapter must not contain insert/update calls against Supabase."""
+    """A provider adapter must not contain insert/update calls against the CRM."""
     offenders = []
     for path in python_files("integrations"):
-        if path.parts[-2] == "supabase":  # the CRM client is allowed to write
+        # The data-access layer itself is the sanctioned writer; adapters must not be.
+        if path.parts[-2] in {"postgres", "supabase"}:
             continue
         text = path.read_text(encoding="utf-8")
         for needle in (".post(\"companies\"", ".post('companies'", "insert into companies"):

@@ -26,10 +26,11 @@
 |---|---|---|
 | Branch / HEAD | `main` @ `447dc94` | `git rev-parse HEAD` |
 | Tracked files | 154 | `git ls-files \| wc -l` |
-| Full suite | **448 collected / 442 passed / 6 skipped / 0 failed** (402 / 396 at mission start) | `pytest -q` |
+| Full suite | **436 collected / 432 passed / 4 skipped / 0 failed** after the database migration | `pytest -q`; the 4 skips are precondition gaps in `tests/db`, not a missing DSN |
 | Skipped | all six in `tests/db/`, `ERYNDEX_DB_URL` unset | `tests/db/test_security_fixes_db.py:31-33` |
 | Python LOC | 13,647 | `wc -l` over the eight packages |
-| Migrations applied | `20261107174129`, `20261114194622`, `20261115212728` | remote `supabase_migrations.schema_migrations` |
+| Database | **self-hosted PostgreSQL 17.11** in compose (`eryndex-postgres`, 127.0.0.1:5433) | ADR-0007; `reports/eryndex/migration-to-postgres-execution.md` |
+| Migrations applied | `0000_foundation`, `20261107174129`, `20261114194622`, `20261115212728` | `python scripts/db_migrate.py --status` → ledger `public.schema_migrations` |
 | Deployed tables | 16 (14 core + 2 discovery), RLS on all | catalogue read-back, `directive-03-7` §4 |
 | Production | untouched | no contact in any run |
 
@@ -159,7 +160,7 @@
 
 | ID | Blocker | Unblocks |
 |---|---|---|
-| OW-1 | A Development Auth user with `app_metadata {"user_role":"agent","subagent_type":"discovery","agent_id":"hermes-discovery-v1"}` — dashboard/admin API only; no service-role key exists locally and the project signs with ES256/JWKS, so no JWT can be minted | live agent-path verification (C1-live, C6-live, K2) |
+| OW-1 | ~~A Development Auth user with discovery claims~~ **RESOLVED 2026-11-23** — identities are now rows in `auth.users`, created locally by `scripts/create_identity.py`; the discovery, qualifier and operator identities all exist | unblocked C1-live, C6-live, K2 |
 | OW-2 | A Development Postgres DSN for `tests/db/`, or a persistent role | B1, execution proof for B6 |
 | OW-3 | OpenGTM: accept AGPL-3.0 or drop it | D4 |
 | OW-4 | Crawl4AI reachable (Docker restart or hosted) | D1 |

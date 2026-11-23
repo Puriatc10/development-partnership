@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from integrations.supabase.qualification_repository import QualificationRepository
+from integrations.postgres.qualification_repository import QualificationRepository
 
 from .loader import ResearchEvidence, score_company
 

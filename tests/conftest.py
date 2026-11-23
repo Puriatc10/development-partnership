@@ -13,3 +13,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# Tests that need the database read the same .env the application does. Values already in the
+# environment win, so CI can inject them without touching the file.
+from contracts.environment import load_dotenv  # noqa: E402
+
+load_dotenv(str(ROOT / ".env"))

@@ -23,7 +23,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from discovery.identity import normalize_name  # noqa: E402
-from integrations.supabase.client import PostgrestError  # noqa: E402
+from integrations.postgres.client import PostgrestError  # noqa: E402
 from operations.session import OperatorSessionError, open_session  # noqa: E402
 
 SOURCE_NAME = "synthetic_fixture"

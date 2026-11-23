@@ -67,6 +67,22 @@ class RegistrationResult:
         return str(self.company.get("id"))
 
 
+def _iso(value: Any) -> Any:
+    """Render a datetime as ISO text for a jsonb column.
+
+    psycopg returns real ``datetime`` objects, and ``jsonb`` serialisation cannot carry them —
+    the register call failed on exactly this when the session moved off PostgREST, which had
+    already turned timestamps into strings.
+    """
+    from datetime import date, datetime
+
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return value
+
+
 def _company_by_domain(client: Any, domain: str) -> Mapping[str, Any] | None:
     rows = client.get(
         COMPANY_TABLE,
@@ -257,7 +273,7 @@ def register_candidate(
             "signal_keys": sorted(signals) if signals else [],
             "gate": "G1",
             "reviewed_by": str(reviewer),
-            "reviewed_at": candidate.get("reviewed_at"),
+            "reviewed_at": _iso(candidate.get("reviewed_at")),
             "registration_operator": operator_id,
         },
         "lifecycle_stage": "identified",

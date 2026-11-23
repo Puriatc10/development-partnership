@@ -32,7 +32,11 @@ Non-negotiable invariants (do not reopen without an ADR):
 
 ## 2. Verified baseline
 
-Measured, not claimed. Evidence column names the artefact that proves it.
+**Post-migration note (2026-11-23).** The platform no longer uses Supabase: PostgreSQL 17 runs in
+Docker Compose with our own roles, `auth` schema and migration ledger (ADR-0007,
+`reports/eryndex/migration-to-postgres-execution.md`). Rows below that cite a Supabase project
+describe the state the mission started from; the security model they describe is unchanged in shape
+and is now executable against our own database.
 
 | Capability | State | Evidence |
 |---|---|---|

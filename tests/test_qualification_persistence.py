@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from integrations.supabase.qualification_repository import (
+from integrations.postgres.qualification_repository import (
     QualificationPersistenceError,
     QualificationRepository,
     tier_for_score,

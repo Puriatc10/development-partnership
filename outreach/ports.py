@@ -14,7 +14,7 @@ impossible to paper over:
 * a draft write that comes back approved, queued or sent means the boundary is
   broken, not that the workflow finished.
 
-The production implementations live in ``integrations/supabase`` (reads through
+The production implementations live in ``integrations/postgres`` (reads through
 RLS, writes through the drafting agent's JWT). This module is importable with
 the standard library only, so the gate and its tests never need a database.
 

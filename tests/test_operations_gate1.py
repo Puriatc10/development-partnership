@@ -21,7 +21,6 @@ from operations.candidates import Gate1Error
 from operations.registration import register_candidate
 from operations.session import OperatorSession, OperatorSessionError, open_session
 
-DEV_URL = "https://vyfqmrdznmocnmzyjjcj.supabase.co"
 OPERATOR_ID = "e1cd1ff2-0000-4000-8000-00000000aaaa"
 CANDIDATE_ID = "c0000000-0000-4000-8000-000000000001"
 
@@ -286,6 +285,8 @@ def test_the_queue_lists_pending_candidates_only_and_can_be_asked_for_any_status
 
 
 class _StubAuth:
+    """Stands in for PostgresAuthClient: the session's contract is the claims it returns."""
+
     claims: dict = {}
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -298,12 +299,15 @@ class _StubAuth:
             "claims": self.claims,
         }
 
+    def verify_token(self, token: str) -> dict:  # pragma: no cover - not used by the session
+        return self.claims
+
 
 def _env() -> dict[str, str]:
     return {
-        "SUPABASE_URL": DEV_URL,
-        "SUPABASE_PROJECT_REF": "vyfqmrdznmocnmzyjjcj",
-        "SUPABASE_ANON_KEY": "anon",
+        "ERYNDEX_DB_URL": "postgresql://u:p@127.0.0.1:5433/eryndex",
+        "ERYNDEX_ENV": "development",
+        "ERYNDEX_JWT_SECRET": "test-secret",
         "OPERATOR_EMAIL": "operator@partnership.internal",
         "OPERATOR_PASSWORD": "secret",
     }
@@ -311,7 +315,7 @@ def _env() -> dict[str, str]:
 
 def test_an_agent_identity_cannot_open_an_operator_session(monkeypatch):
     _StubAuth.claims = {"sub": "u-1", "app_metadata": {"user_role": "agent", "subagent_type": "discovery"}}
-    monkeypatch.setattr("operations.session.SupabaseAuthClient", _StubAuth)
+    monkeypatch.setattr("operations.session.PostgresAuthClient", _StubAuth)
     with pytest.raises(OperatorSessionError) as exc:
         open_session(_env())
     assert "not a human operator" in str(exc.value)
@@ -320,7 +324,7 @@ def test_an_agent_identity_cannot_open_an_operator_session(monkeypatch):
 
 def test_an_operator_session_reports_its_identity(monkeypatch):
     _StubAuth.claims = {"sub": "u-1", "app_metadata": {"user_role": "operator"}}
-    monkeypatch.setattr("operations.session.SupabaseAuthClient", _StubAuth)
+    monkeypatch.setattr("operations.session.PostgresAuthClient", _StubAuth)
     session = open_session(_env())
     assert isinstance(session, OperatorSession)
     assert session.user_id == "u-1" and session.role == "operator"

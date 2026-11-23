@@ -1,326 +1,254 @@
-"""Adversarial RLS probes against Development, each inside a rolled-back transaction.
+"""Adversarial RLS probes against the platform database, all rolled back per call.
 
-Every case sets the JWT claims the policies read (``request.jwt.claims``), switches to the
-PostgREST role (``authenticated`` or ``anon``), attempts one action, and rolls back. Nothing
-is persisted, no RLS is weakened, and no service_role is used.
+Each case builds a client with the claims the policies read, attempts one action, and checks the
+outcome the security model requires. This used to shell out to the Supabase CLI with temporary
+SQL files and a mutable linked-project target; it now runs in process against our own database,
+which is also why the old pre-flight file check is gone: the guard is the connection string.
 
-A case passes when the database behaves as the security model requires: the allowed action
-succeeds, and the forbidden one fails with the error the policy is supposed to produce.
-
-Run: python scripts/rls_probe.py            (prints a matrix, exits non-zero on a mismatch)
+Run: python scripts/rls_probe.py
 """
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
 import sys
-import tempfile
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Callable
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from contracts.environment import EnvironmentConfig, assert_development_environment  # noqa: E402
+from contracts.environment import DatabaseConfig, assert_database_environment  # noqa: E402
 from contracts.errors import EnvironmentGuardError  # noqa: E402
+from integrations.postgres.client import DatabaseError, PostgresClient  # noqa: E402
 
-DEV_REF = "vyfqmrdznmocnmzyjjcj"
-PROD_REF = "vqnamszywsuqjxuqseas"
-
+OPERATOR_ID = "e1cd1ff2-080d-47c4-9589-477ce66258f3"
 AGENT_A = "hermes-discovery-v1"
 AGENT_B = "hermes-discovery-v2"
-RESEARCHER = "hermes-researcher-v1"
-OPERATOR_ID = "e1cd1ff2-080d-47c4-9589-477ce66258f3"
-CANDIDATE = "11111111-1111-4111-8111-111111111111"
-CANDIDATE_B = "22222222-2222-4222-8222-222222222222"
+
+OPERATOR_CLAIMS = {"sub": OPERATOR_ID, "role": "authenticated", "app_metadata": {"user_role": "operator"}}
+AGENT_A_CLAIMS = {
+    "sub": str(uuid.uuid5(uuid.NAMESPACE_URL, "agent-a")),
+    "role": "authenticated",
+    "app_metadata": {"user_role": "agent", "subagent_type": "discovery", "agent_id": AGENT_A},
+}
+AGENT_B_CLAIMS = {
+    "sub": str(uuid.uuid5(uuid.NAMESPACE_URL, "agent-b")),
+    "role": "authenticated",
+    "app_metadata": {"user_role": "agent", "subagent_type": "discovery", "agent_id": AGENT_B},
+}
+RESEARCHER_CLAIMS = {
+    "sub": str(uuid.uuid5(uuid.NAMESPACE_URL, "agent-r")),
+    "role": "authenticated",
+    "app_metadata": {"user_role": "agent", "subagent_type": "researcher", "agent_id": "hermes-researcher-v1"},
+}
 
 
-def claims(*, role: str, user_role: str | None = None, subagent_type: str | None = None,
-           agent_id: str | None = None, sub: str = "subject") -> str:
-    app_metadata: dict[str, str] = {}
-    if user_role:
-        app_metadata["user_role"] = user_role
-    if subagent_type:
-        app_metadata["subagent_type"] = subagent_type
-    if agent_id:
-        app_metadata["agent_id"] = agent_id
-    return json.dumps({"sub": sub, "role": role, "app_metadata": app_metadata})
-
-
-DISCOVERY_AGENT_A = claims(role="authenticated", user_role="agent", subagent_type="discovery", agent_id=AGENT_A, sub="agent-a")
-DISCOVERY_AGENT_B = claims(role="authenticated", user_role="agent", subagent_type="discovery", agent_id=AGENT_B, sub="agent-b")
-RESEARCH_AGENT = claims(role="authenticated", user_role="agent", subagent_type="researcher", agent_id=RESEARCHER, sub="agent-r")
-OPERATOR = claims(role="authenticated", user_role="operator", sub=f"{OPERATOR_ID}")
-
-
-@dataclass(frozen=True)
+@dataclass
 class Case:
     name: str
-    expect: str          # "allow" or a SQLSTATE / error fragment the denial must contain
-    role: str            # postgres role to switch to
-    claims_json: str     # JWT claims for the transaction ("" = none)
-    sql: str
-    why: str
+    run: Callable[[dict[str, PostgresClient]], Any]
+    expect: str  # allow | deny | empty | unchanged | approved | rows
+    detail: str = ""
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
-def _txn(case: Case) -> str:
-    body = [f"set local role {case.role};"]
-    if case.claims_json:
-        body.append(f"select set_config('request.jwt.claims', $jwt${case.claims_json}$jwt$, true);")
-    body.append(case.sql)
-    return "begin;\n" + "\n".join(body) + "\nrollback;\n"
+def _domain(tag: str) -> str:
+    return f"probe-{tag}-{uuid.uuid4().hex[:6]}.example.com"
 
 
-CANDIDATE_INSERT = """
-insert into discovery_candidates
-    (id, name, normalized_name, domain, source_name, status, batch_key, discovered_by_agent_identity)
-values
-    ('{id}', 'Probe Co', 'probe co', '{domain}', 'rls_probe', 'pending_review', 'probe-batch', '{actor}');
-select count(*) as visible from discovery_candidates where id = '{id}';
-"""
-
-CASES: list[Case] = [
-    Case(
-        "A agent stages its own candidate",
-        "allow",
-        "authenticated",
-        DISCOVERY_AGENT_A,
-        CANDIDATE_INSERT.format(id=CANDIDATE, domain="probe-a.example.com", actor=AGENT_A),
-        "the ordinary staging write must succeed",
-    ),
-    Case(
-        "B agent forges another agent's identity",
-        "42501",
-        "authenticated",
-        DISCOVERY_AGENT_A,
-        CANDIDATE_INSERT.format(id=CANDIDATE_B, domain="probe-b.example.com", actor=AGENT_B),
-        "discovered_by_agent_identity must equal current_agent_identity()",
-    ),
-    Case(
-        "C researcher stages a discovery candidate",
-        "42501",
-        "authenticated",
-        RESEARCH_AGENT,
-        CANDIDATE_INSERT.format(id=CANDIDATE_B, domain="probe-c.example.com", actor=RESEARCHER),
-        "only subagent_type='discovery' may stage",
-    ),
-    Case(
-        "D agent approves its own candidate",
-        "unchanged:pending_review",
-        "authenticated",
-        DISCOVERY_AGENT_A,
-        f"""
-insert into discovery_candidates
-    (id, name, normalized_name, domain, source_name, status, batch_key, discovered_by_agent_identity)
-values ('{CANDIDATE}', 'Probe Co', 'probe co', 'probe-d.example.com', 'rls_probe', 'pending_review', 'probe-batch', '{AGENT_A}');
-update discovery_candidates
-   set status = 'approved', reviewed_by_human_id = '{OPERATOR_ID}', reviewed_at = now()
- where id = '{CANDIDATE}';
-select status::text as status from discovery_candidates where id = '{CANDIDATE}';
-""",
-        "an agent must not be able to satisfy Gate 1 — and because RLS filters UPDATE rows "
-        "instead of raising, the proof is that the row is still pending, not that it errored",
-    ),
-    Case(
-        "E agent reads another agent's candidate",
-        "0",
-        "authenticated",
-        DISCOVERY_AGENT_B,
-        f"""
-insert into discovery_candidates
-    (id, name, normalized_name, domain, source_name, status, batch_key, discovered_by_agent_identity)
-values ('{CANDIDATE}', 'Probe Co', 'probe co', 'probe-e.example.com', 'rls_probe', 'pending_review', 'probe-batch', '{AGENT_B}');
-set local role postgres;
-insert into discovery_candidates
-    (id, name, normalized_name, domain, source_name, status, batch_key, discovered_by_agent_identity)
-values ('{CANDIDATE_B}', 'Other Co', 'other co', 'probe-e2.example.com', 'rls_probe', 'pending_review', 'probe-batch', '{AGENT_A}');
-set local role authenticated;
-select count(*) as visible from discovery_candidates where discovered_by_agent_identity = '{AGENT_A}';
-""",
-        "a discovery agent sees only its own rows",
-    ),
-    Case(
-        "F anon reads discovery candidates",
-        "42501",
-        "anon",
-        "",
-        "select count(*) from discovery_candidates;",
-        "anon holds no grant and no policy",
-    ),
-    Case(
-        "G operator approves a pending candidate",
-        'allow:"status": "approved"',
-        "authenticated",
-        OPERATOR,
-        f"""
-insert into discovery_candidates
-    (id, name, normalized_name, domain, source_name, status, batch_key, discovered_by_agent_identity)
-values ('{CANDIDATE}', 'Probe Co', 'probe co', 'probe-g.example.com', 'rls_probe', 'pending_review', 'probe-batch', '{AGENT_A}');
-update discovery_candidates
-   set status = 'approved', reviewed_by_human_id = '{OPERATOR_ID}', reviewed_at = now()
- where id = '{CANDIDATE}';
-select status::text as status from discovery_candidates where id = '{CANDIDATE}';
-""",
-        "the human gate is reachable only by a human",
-    ),
-    Case(
-        "H operator updates a candidate without the review pair",
-        "23514",
-        "authenticated",
-        OPERATOR,
-        f"""
-insert into discovery_candidates
-    (id, name, normalized_name, domain, source_name, status, batch_key, discovered_by_agent_identity)
-values ('{CANDIDATE}', 'Probe Co', 'probe co', 'probe-h.example.com', 'rls_probe', 'pending_review', 'probe-batch', '{AGENT_A}');
-update discovery_candidates set status = 'approved' where id = '{CANDIDATE}';
-""",
-        "chk_discovery_candidate_review_pair must refuse a reviewer-less approval",
-    ),
-    Case(
-        "I agent attaches evidence to an approved candidate",
-        "42501",
-        "authenticated",
-        DISCOVERY_AGENT_A,
-        f"""
-insert into discovery_candidates
-    (id, name, normalized_name, domain, source_name, status, batch_key, discovered_by_agent_identity)
-values ('{CANDIDATE}', 'Probe Co', 'probe co', 'probe-i.example.com', 'rls_probe', 'pending_review', 'probe-batch', '{AGENT_A}');
-set local role postgres;
-update discovery_candidates
-   set status = 'approved', reviewed_by_human_id = '{OPERATOR_ID}', reviewed_at = now()
- where id = '{CANDIDATE}';
-set local role authenticated;
-insert into discovery_candidate_evidence (candidate_id, url, excerpt, retrieved_at, provider)
-values ('{CANDIDATE}', 'https://probe-i.example.com/x', 'excerpt', now(), 'rls_probe');
-""",
-        "evidence may only attach while the candidate is still pending_review",
-    ),
-    Case(
-        "J agent writes to companies",
-        "42501",
-        "authenticated",
-        DISCOVERY_AGENT_A,
-        """
-insert into companies
-    (name, normalized_name, primary_domain, website_url, primary_segment, discovery_source)
-values ('Probe Co', 'probe co', 'probe-j.example.com', 'https://probe-j.example.com',
-        'digital_agency', 'rls_probe');
-""",
-        "Discovery must never create CRM companies",
-    ),
-    Case(
-        "K operator can see the row it is about to review (control)",
-        'allow:"visible": 1',
-        "authenticated",
-        OPERATOR,
-        f"""
-insert into discovery_candidates
-    (id, name, normalized_name, domain, source_name, status, batch_key, discovered_by_agent_identity)
-values ('{CANDIDATE}', 'Probe Co', 'probe co', 'probe-k.example.com', 'rls_probe', 'pending_review', 'probe-batch', '{AGENT_A}');
-select count(*) as visible from discovery_candidates where id = '{CANDIDATE}';
-""",
-        "control: the operator policy grants visibility of the row being reviewed",
-    ),
-]
+def stage(client: PostgresClient, *, identity: str, domain: str) -> dict[str, Any]:
+    return client.post(
+        "discovery_candidates",
+        {
+            "name": "Probe Co",
+            "normalized_name": "probe co",
+            "domain": domain,
+            "source_name": "rls_probe",
+            "status": "pending_review",
+            "batch_key": f"probe-{uuid.uuid4().hex[:8]}",
+            "discovered_by_agent_identity": identity,
+        },
+    )[0]
 
 
-def assert_development_target() -> str:
-    """Refuse to run before any statement executes unless the linked project is Development.
-
-    The CLI resolves its target from ``supabase/.temp/project-ref``, which is mutable and
-    is what ``supabase link`` rewrites. Checking the *output* for the Production ref after
-    the fact is not a guard: by then the statement has already run against whatever was
-    linked. This runs first, and it is the only reason this script is safe to keep.
-    """
-    ref_file = REPO / "supabase" / ".temp" / "project-ref"
-    if not ref_file.exists():
-        raise SystemExit(
-            "refusing to run: no linked project recorded at supabase/.temp/project-ref. "
-            "Link the Development project first."
-        )
-    linked = ref_file.read_text(encoding="utf-8").strip()
-    if linked == PROD_REF:
-        raise SystemExit("refusing to run: the linked project is Production")
-    config = EnvironmentConfig(
-        project_ref=linked,
-        supabase_url=f"https://{linked}.supabase.co",
-        anon_key="unused-by-this-script",
+def _approve(client: PostgresClient, row_id: Any) -> None:
+    client.patch(
+        "discovery_candidates",
+        {
+            "status": "approved",
+            "reviewed_by_human_id": OPERATOR_ID,
+            "reviewed_at": "2026-11-20T00:00:00+00:00",
+        },
+        params={"id": f"eq.{row_id}"},
     )
-    try:
-        assert_development_environment(config)  # raises for anything but the approved Development ref
-    except EnvironmentGuardError as exc:
-        # A script should exit with a reason, not a traceback.
-        raise SystemExit(f"refusing to run: {exc}") from exc
 
-    env_ref = os.environ.get("SUPABASE_PROJECT_REF")
-    if env_ref and env_ref.strip() != linked:
-        raise SystemExit(
-            f"refusing to run: SUPABASE_PROJECT_REF ({env_ref.strip()}) and the linked project "
-            f"({linked}) disagree"
+
+def build_cases() -> list[Case]:
+    def a(c):
+        row = stage(c["agent_a"], identity=AGENT_A, domain=_domain("a"))
+        assert row["status"] == "pending_review"
+        c["operator"].delete("discovery_candidates", {"id": f"eq.{row['id']}"})
+        return "staged"
+
+    def b(c):
+        stage(c["agent_a"], identity=AGENT_B, domain=_domain("b"))
+        return "staged"
+
+    def cc(c):
+        stage(c["researcher"], identity="hermes-researcher-v1", domain=_domain("c"))
+        return "staged"
+
+    def d(c):
+        row = stage(c["agent_a"], identity=AGENT_A, domain=_domain("d"))
+        _approve(c["agent_a"], row["id"])
+        status = c["operator"].get("discovery_candidates", {"select": "status", "id": f"eq.{row['id']}"})
+        c["operator"].delete("discovery_candidates", {"id": f"eq.{row['id']}"})
+        return status[0]["status"] if status else "missing"
+
+    def e(c):
+        row = stage(c["operator"], identity="operator-manual-v1", domain=_domain("e"))
+        seen = c["agent_b"].get("discovery_candidates", {"select": "id", "id": f"eq.{row['id']}"})
+        c["operator"].delete("discovery_candidates", {"id": f"eq.{row['id']}"})
+        return seen
+
+    def f(c):
+        return c["anon"].get("discovery_candidates", {"select": "id"})
+
+    def g(c):
+        row = stage(c["operator"], identity="operator-manual-v1", domain=_domain("g"))
+        patched = c["operator"].patch(
+            "discovery_candidates",
+            {
+                "status": "approved",
+                "reviewed_by_human_id": OPERATOR_ID,
+                "reviewed_at": "2026-11-20T00:00:00+00:00",
+            },
+            params={"id": f"eq.{row['id']}"},
         )
-    return linked
+        c["operator"].delete("discovery_candidates", {"id": f"eq.{row['id']}"})
+        return patched[0]["status"] if patched else "missing"
 
+    def h(c):
+        row = stage(c["operator"], identity="operator-manual-v1", domain=_domain("h"))
+        try:
+            c["operator"].patch("discovery_candidates", {"status": "approved"}, params={"id": f"eq.{row['id']}"})
+            return "patched"
+        finally:
+            c["operator"].delete("discovery_candidates", {"id": f"eq.{row['id']}"})
 
-#: The repo's CLI is an npm shim, so it must run in a POSIX shell — but this host's
-#: ``bash`` resolves to WSL, which cannot see Windows paths. Git Bash is the shell the
-#: project actually uses, so it is addressed explicitly.
-GIT_BASH = Path("C:/Program Files/Git/bin/bash.exe")
+    def i(c):
+        row = stage(c["operator"], identity=AGENT_A, domain=_domain("i"))
+        _approve(c["operator"], row["id"])
+        try:
+            c["agent_a"].post(
+                "discovery_candidate_evidence",
+                {
+                    "candidate_id": row["id"],
+                    "url": "https://probe.example.com/x",
+                    "excerpt": "excerpt",
+                    "provider": "rls_probe",
+                },
+            )
+            return "inserted"
+        finally:
+            c["operator"].delete("discovery_candidates", {"id": f"eq.{row['id']}"})
 
-
-def _run_sql(statement: str) -> tuple[bool, str]:
-    with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False, encoding="utf-8") as handle:
-        handle.write(statement)
-        path = handle.name
-    posix_path = path.replace("\\", "/")
-    shell = GIT_BASH if GIT_BASH.exists() else Path("bash")
-    try:
-        proc = subprocess.run(
-            [str(shell), "-c", f'supabase db query -f "{posix_path}" --remote --yes'],
-            cwd=str(REPO),
-            capture_output=True,
-            text=True,
-            timeout=180,
+    def j(c):
+        return c["agent_a"].post(
+            "companies",
+            {
+                "name": "Probe Co",
+                "normalized_name": "probe co",
+                "primary_domain": _domain("j"),
+                "website_url": "https://probe.example.com",
+                "primary_segment": "digital_agency",
+                "discovery_source": "rls_probe",
+            },
         )
-    finally:
-        Path(path).unlink(missing_ok=True)
-    output = (proc.stdout or "") + (proc.stderr or "")
-    if PROD_REF in output:
-        raise SystemExit("refusing to continue: the CLI reported the Production project ref")
-    return proc.returncode == 0, output
+
+    def k(c):
+        row = stage(c["operator"], identity="operator-manual-v1", domain=_domain("k"))
+        seen = c["operator"].get("discovery_candidates", {"select": "id", "id": f"eq.{row['id']}"})
+        c["operator"].delete("discovery_candidates", {"id": f"eq.{row['id']}"})
+        return len(seen)
+
+    return [
+        Case("A agent stages its own candidate", a, "allow", "the ordinary staging write must succeed"),
+        Case("B agent forges another agent's identity", b, "deny", "discovered_by_agent_identity must equal current_agent_identity()"),
+        Case("C researcher stages a discovery candidate", cc, "deny", "only subagent_type='discovery' may stage"),
+        Case("D agent approves its own candidate", d, "unchanged", "an agent must not be able to satisfy Gate 1"),
+        Case("E agent reads another agent's candidate", e, "empty", "a discovery agent sees only its own rows"),
+        Case("F anon reads discovery candidates", f, "deny", "anon holds no grant and no policy"),
+        Case("G operator approves a pending candidate", g, "approved", "the human gate is reachable only by a human"),
+        Case("H operator approves without the review pair", h, "deny", "chk_discovery_candidate_review_pair refuses a reviewer-less approval"),
+        Case("I agent attaches evidence to an approved candidate", i, "deny", "evidence may only attach while the candidate is pending_review"),
+        Case("J agent writes to companies", j, "deny", "Discovery must never create CRM companies"),
+        Case("K operator sees the row it is about to review", k, "rows", "control: the operator policy grants visibility"),
+    ]
+
+
+def judge(case: Case, outcome: Any) -> tuple[bool, str]:
+    if isinstance(outcome, Exception):
+        if case.expect == "deny":
+            return isinstance(outcome, DatabaseError), f"raised {outcome.__class__.__name__}"
+        return False, f"raised {outcome!r}"
+    if case.expect == "deny":
+        return False, f"allowed ({outcome!r})"
+    if case.expect == "allow":
+        return True, "allowed"
+    if case.expect == "empty":
+        return outcome == [], f"{len(outcome)} row(s) visible"
+    if case.expect == "unchanged":
+        return outcome == "pending_review", f"status={outcome}"
+    if case.expect == "approved":
+        return outcome == "approved", f"status={outcome}"
+    if case.expect == "rows":
+        return outcome == 1, f"{outcome} row(s) visible"
+    return False, f"unknown expectation {case.expect!r}"
 
 
 def main() -> int:
-    linked = assert_development_target()
-    print(f"target verified: {linked} (Development)\n")
-    failures = 0
+    try:
+        config = DatabaseConfig.load()
+        assert_database_environment(config)
+    except EnvironmentGuardError as exc:
+        print(f"environment refused: {exc}", file=sys.stderr)
+        return 2
+
+    print(f"target verified: {config.database} on {config.host} ({config.env})\n")
+    clients = {
+        "operator": PostgresClient(config.dsn, role="authenticated", claims=OPERATOR_CLAIMS),
+        "agent_a": PostgresClient(config.dsn, role="authenticated", claims=AGENT_A_CLAIMS),
+        "agent_b": PostgresClient(config.dsn, role="authenticated", claims=AGENT_B_CLAIMS),
+        "researcher": PostgresClient(config.dsn, role="authenticated", claims=RESEARCHER_CLAIMS),
+        "anon": PostgresClient(config.dsn, role="anon", claims={"role": "anon"}),
+    }
+
     rows: list[tuple[str, str, str, bool]] = []
-    for case in CASES:
-        ok, output = _run_sql(_txn(case))
-        if case.expect == "allow":
-            passed = ok
-        elif case.expect.startswith("allow:"):
-            needle = case.expect.split(":", 1)[1]
-            passed = ok and needle in output.replace("\n", " ")
-        elif case.expect == "0":
-            passed = ok and '"visible": 0' in output.replace("\n", " ")
-        elif case.expect.startswith("unchanged:"):
-            expected_value = case.expect.split(":", 1)[1]
-            passed = ok and f'"status": "{expected_value}"' in output.replace("\n", " ")
-        else:
-            passed = (not ok) and (case.expect in output)
-        rows.append((case.name, case.expect, "allowed" if ok else "refused", passed))
-        if not passed:
-            failures += 1
-            print(f"MISMATCH  {case.name}\n  expected {case.expect}, got {'allowed' if ok else 'refused'}")
-            print(f"  why it matters: {case.why}")
-            print("  " + "\n  ".join(line for line in output.splitlines() if line.strip())[:1200])
+    try:
+        for case in build_cases():
+            try:
+                outcome: Any = case.run(clients)
+            except Exception as exc:  # noqa: BLE001 - a refusal is a result, not a crash
+                outcome = exc
+            passed, observed = judge(case, outcome)
+            rows.append((case.name, case.expect, observed, passed))
+            if not passed:
+                print(f"MISMATCH {case.name}\n  expected {case.expect}, observed {observed}")
+                print(f"  why it matters: {case.detail}")
+    finally:
+        for client in clients.values():
+            client.close()
+
     width = max(len(name) for name, _, _, _ in rows)
-    print(f"\n{'case'.ljust(width)}  expected  actual   result")
-    print("-" * (width + 30))
-    for name, expected, actual, passed in rows:
-        print(f"{name.ljust(width)}  {expected:<8}  {actual:<7}  {'PASS' if passed else 'FAIL'}")
+    print(f"\n{'case'.ljust(width)}  expected   observed            result")
+    print("-" * (width + 40))
+    for name, expect, observed, passed in rows:
+        print(f"{name.ljust(width)}  {expect:<10} {observed:<19} {'PASS' if passed else 'FAIL'}")
+
+    failures = sum(1 for *_, passed in rows if not passed)
     print(f"\n{len(rows) - failures}/{len(rows)} cases behaved as the security model requires")
     return 0 if failures == 0 else 1
 

@@ -1,13 +1,13 @@
-"""Environment contract: loading, identity checks and the fail-closed guard.
+"""Environment contract: where the database is, and what is allowed to be touched.
 
-Extracted from ``agents/researcher/config.py`` and
-``agents/researcher/runner.py:validate_development_environment`` (ADR-0002) so
-that every agent and adapter shares one guard.
+The platform no longer has a project reference to pin — it has a connection string. The guard
+that used to refuse the Supabase Production project now refuses any host that is not explicitly
+allow-listed, which is the same protection expressed for a self-hosted database:
 
-Rules enforced here:
-- only the approved Development project ref may be used by platform code;
-- a missing or malformed configuration fails before any network call;
-- secrets are never included in error messages.
+* in development the host must be local (a container on this machine);
+* naming a remote host requires ``ERYNDEX_ENV=production`` **and** listing it explicitly;
+* a missing or malformed DSN fails before any connection is attempted;
+* secrets are never echoed — messages name variables, never values.
 """
 
 from __future__ import annotations
@@ -16,22 +16,28 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Optional
+from urllib.parse import urlsplit
 
 from .errors import EnvironmentGuardError
 
-APPROVED_DEV_PROJECT_REF = "vyfqmrdznmocnmzyjjcj"
-APPROVED_DEV_SUPABASE_URL = "https://vyfqmrdznmocnmzyjjcj.supabase.co"
-PRODUCTION_PROJECT_REF = "vqnamszywsuqjxuqseas"
+DEVELOPMENT = "development"
+PRODUCTION = "production"
+KNOWN_ENVIRONMENTS = (DEVELOPMENT, PRODUCTION)
+
+#: Hosts that can only be a local container. Compose service names count because they resolve
+#: inside the compose network; none of them can leave this machine.
+LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0.0.0.0", "postgres", "db"})
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
+SUPABASE_RETIRED_MESSAGE = (
+    "Supabase is retired in this repository; use DatabaseConfig (ERYNDEX_DB_URL) instead. "
+    "See docs/MIGRATION_TO_SELF_HOSTED_POSTGRES.md."
+)
+
 
 def load_env_file(path: Optional[str | os.PathLike[str]] = None) -> dict[str, str]:
-    """Read a .env file into a dict without mutating ``os.environ``.
-
-    Never raises on a missing file: absence of configuration is reported by the
-    caller, not by an exception that hides its cause.
-    """
+    """Read a .env file into a dict without mutating ``os.environ``."""
     dotenv_path = Path(path) if path else _REPO_ROOT / ".env"
     values: dict[str, str] = {}
     if not dotenv_path.exists():
@@ -46,92 +52,93 @@ def load_env_file(path: Optional[str | os.PathLike[str]] = None) -> dict[str, st
 
 
 def load_dotenv(dotenv_path: Optional[str] = None) -> None:
-    """Backwards-compatible shim: populate ``os.environ`` from .env.
-
-    Preserved for ``agents.researcher.config`` compatibility (ADR-0002).
-    """
+    """Populate ``os.environ`` from .env without overwriting anything already set."""
     for key, value in load_env_file(dotenv_path).items():
         os.environ.setdefault(key, value)
 
 
-def normalize_supabase_url(url: Optional[str]) -> str:
-    if not url or not isinstance(url, str):
-        return ""
-    cleaned = url.strip().rstrip("/")
-    if "://" in cleaned:
-        scheme, rest = cleaned.split("://", 1)
-        return f"{scheme.lower()}://{rest.lower()}"
-    return cleaned.lower()
+def _resolved(environ: Optional[Mapping[str, str]]) -> dict[str, str]:
+    if environ is not None:
+        return dict(environ)
+    return {**load_env_file(), **os.environ}
 
 
 @dataclass(frozen=True)
-class EnvironmentConfig:
-    project_ref: str
-    supabase_url: str
-    anon_key: str
-    researcher_email: str = ""
-    researcher_password: str = ""
-    researcher_agent_id: str = "hermes-researcher-v1"
+class DatabaseConfig:
+    """The database the platform talks to, and the environment it claims to be."""
+
+    dsn: str
+    env: str = DEVELOPMENT
+    jwt_secret: str = ""
 
     @classmethod
-    def load(cls, environ: Optional[Mapping[str, str]] = None) -> "EnvironmentConfig":
-        env = dict(environ) if environ is not None else {**load_env_file(), **os.environ}
-        project_ref = env.get("SUPABASE_PROJECT_REF", APPROVED_DEV_PROJECT_REF)
+    def load(cls, environ: Optional[Mapping[str, str]] = None) -> "DatabaseConfig":
+        values = _resolved(environ)
         return cls(
-            project_ref=project_ref,
-            supabase_url=env.get("SUPABASE_URL", f"https://{project_ref}.supabase.co"),
-            anon_key=env.get("SUPABASE_ANON_KEY", ""),
-            researcher_email=env.get("RESEARCHER_EMAIL", "researcher.v1@agents.internal"),
-            researcher_password=env.get("RESEARCHER_PASSWORD", ""),
-            researcher_agent_id=env.get("RESEARCHER_AGENT_ID", "hermes-researcher-v1"),
+            dsn=(values.get("ERYNDEX_DB_URL") or "").strip(),
+            env=(values.get("ERYNDEX_ENV") or DEVELOPMENT).strip().lower(),
+            jwt_secret=(values.get("ERYNDEX_JWT_SECRET") or "").strip(),
         )
 
-    # ``Config`` compatibility aliases used by the existing researcher package.
     @property
-    def agent_id(self) -> str:
-        return self.researcher_agent_id
+    def host(self) -> str:
+        return urlsplit(self.dsn).hostname or ""
+
+    @property
+    def database(self) -> str:
+        return (urlsplit(self.dsn).path or "").lstrip("/")
+
+    @property
+    def is_production(self) -> bool:
+        return self.env == PRODUCTION
 
 
-def assert_development_environment(
-    config: EnvironmentConfig,
+def assert_database_environment(
+    config: DatabaseConfig,
     *,
-    allowed_refs: Iterable[str] = (APPROVED_DEV_PROJECT_REF,),
+    allowed_hosts: Iterable[str] | None = None,
 ) -> None:
-    """Fail closed unless the configuration targets an allow-listed project.
-
-    The production ref is *always* rejected, even if someone adds it to the
-    allow-list by mistake.
-    """
+    """Fail closed unless the connection string targets a database we are allowed to touch."""
     if config is None:
         raise EnvironmentGuardError("Environment guard failure: configuration is required.")
 
-    ref = (config.project_ref or "").strip()
-    if not ref:
-        raise EnvironmentGuardError("Environment guard failure: SUPABASE_PROJECT_REF is missing or empty.")
-    if ref == PRODUCTION_PROJECT_REF:
+    dsn = (config.dsn or "").strip()
+    if not dsn:
         raise EnvironmentGuardError(
-            "Environment guard failure: Production is never a valid target for platform code."
+            "Environment guard failure: ERYNDEX_DB_URL is missing or empty."
         )
-    if ref not in set(allowed_refs):
+    if config.env not in KNOWN_ENVIRONMENTS:
         raise EnvironmentGuardError(
-            f"Environment guard failure: project ref '{ref}' is not allow-listed. "
-            f"Allowed: {sorted(allowed_refs)}."
+            f"Environment guard failure: ERYNDEX_ENV is {config.env!r}; expected one of "
+            f"{list(KNOWN_ENVIRONMENTS)}."
         )
 
-    url = normalize_supabase_url(config.supabase_url)
-    if not url:
-        raise EnvironmentGuardError("Environment guard failure: SUPABASE_URL is missing or empty.")
-    expected = normalize_supabase_url(APPROVED_DEV_SUPABASE_URL)
-    if url != expected:
+    parts = urlsplit(dsn)
+    if parts.scheme not in {"postgresql", "postgres"}:
         raise EnvironmentGuardError(
-            "Environment guard failure: Supabase URL does not match the approved Development endpoint."
+            "Environment guard failure: ERYNDEX_DB_URL must be a postgresql:// connection string."
         )
-    if "@" in url.split("://", 1)[-1].split("/", 1)[0]:
-        # Defensive: never echo credentials that a malformed URL may carry.
+    if not parts.username:
         raise EnvironmentGuardError(
-            "Environment guard failure: Supabase URL must not contain embedded credentials."
+            "Environment guard failure: the connection string names no role."
         )
+    host = parts.hostname or ""
+    if not host:
+        raise EnvironmentGuardError("Environment guard failure: the connection string has no host.")
+    if not (parts.path or "").lstrip("/"):
+        raise EnvironmentGuardError("Environment guard failure: the connection string has no database.")
 
+    if config.is_production:
+        permitted = {h.strip().lower() for h in (allowed_hosts or ()) if h and h.strip()}
+        if host.lower() not in permitted:
+            raise EnvironmentGuardError(
+                "Environment guard failure: ERYNDEX_ENV=production but the host is not in the "
+                "explicit allow-list. Pass allowed_hosts — production is never reached by default."
+            )
+        return
 
-# Backwards-compatible alias (existing runner imports this name).
-validate_development_environment = assert_development_environment
+    if host.lower() not in LOCAL_HOSTS:
+        raise EnvironmentGuardError(
+            f"Environment guard failure: host {host!r} is not local while ERYNDEX_ENV is "
+            f"{config.env!r}. A non-local database requires ERYNDEX_ENV=production."
+        )

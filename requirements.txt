@@ -1,6 +1,13 @@
 # Runtime dependencies for the Eryndex platform (Python 3.12+).
-# The CRM client intentionally uses only the standard library + requests so the
-# agent runtime stays portable across Antigravity and Hermes.
+#
+# The database layer is in-process: psycopg speaks to our own PostgreSQL, so there is no HTTP
+# data layer and no vendor SDK. Identity is local too — argon2id hashes, HS256 tokens.
+
+psycopg[binary]>=3.2,<4
+argon2-cffi>=23,<26
+PyJWT>=2.8,<3
+
+# `requests` remains for the provider adapters (Crawl4AI / GPT Researcher), not for the database.
 requests>=2.31,<3
 
 # Test / tooling

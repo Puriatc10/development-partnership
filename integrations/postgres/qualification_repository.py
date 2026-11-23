@@ -22,7 +22,7 @@ from typing import Any, Mapping, Optional
 
 from contracts.keys import content_key
 
-logger = logging.getLogger("eryndex.supabase.qualification")
+logger = logging.getLogger("eryndex.postgres.qualification")
 
 DIMENSION_COLUMNS = (
     "customer_flow_score",
