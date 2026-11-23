@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Work — Northstar Atlas portfolio</title>
+  <meta name="description" content="Three synthetic case studies: an audit ledger, a content platform, and a clinic scheduler.">
+  <script type="application/ld+json">
+  {"@context": "https://schema.org", "@type": "ItemList",
+   "itemListElement": [
+     {"@type": "ListItem", "position": 1, "url": "https://northstar.example/work/atlas-ledger"},
+     {"@type": "ListItem", "position": 2, "url": "https://northstar.example/work/beacon-cms"}
+   ]}
+  </script>
+</head>
+<body>
+  <div class="topbar"><a href="/">Northstar Atlas</a> <a href="/contact">Start a project</a></div>
+  <div class="wrap">
+    <h1>Selected work</h1>
+    <p>Each case study lists the constraint that shaped the build, the team that shipped it and
+       the date it went live. Client names are invented; the constraints are the interesting
+       part.</p>
+
+    <div class="card">
+      <h2>Atlas Ledger</h2>
+      <h3>Append-only audit trail</h3>
+      <p>A lending client needed an immutable record of every underwriting decision. We built a
+         write-once ledger with signed exports and a review queue that a regulator can read
+         without an engineer present.</p>
+      <a href="/work/atlas-ledger">Read the Atlas Ledger case study</a>
+      <a href="/work/atlas-ledger#outcome">Jump to the outcome</a>
+    </div>
+
+    <div class="card">
+      <h2>Beacon CMS</h2>
+      <h3>Editorial platform</h3>
+      <p>An editorial team of six was blocked by a page builder nobody understood. We replaced
+         it with a structured content model and a preview that renders the real site.</p>
+      <a href="/work/beacon-cms">Read the Beacon CMS case study</a>
+    </div>
+
+    <div class="card">
+      <h2>Clinic scheduler</h2>
+      <h3>Booking and reminders</h3>
+      <p>A fictional clinic group needed appointment booking that survives a bad connection. The
+         result is an offline-first form with a deterministic server reconciliation step.</p>
+      <a href="https://partners.example/clinic-scheduler">External write-up</a>
+    </div>
+  </div>
+  <footer class="site-footer">
+    <p>Say hello: <a href="mailto:hello@northstar.example">hello@northstar.example</a></p>
+  </footer>
+</body>
+</html>

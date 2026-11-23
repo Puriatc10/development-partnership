@@ -1,0 +1,94 @@
+{
+  "provider": "firstparty",
+  "results": [
+    {
+      "categories": {
+        "business_model": 6,
+        "client_roster": 2,
+        "other": 1,
+        "pricing_rates": 3,
+        "scoping_maturity": 5,
+        "team_structure": 4,
+        "technology_stack": 4
+      },
+      "confidence": "medium",
+      "findings": 25,
+      "gaps": "Open question: No team size is stated on the 9 page(s) read; headcount stays unmeasured.; This run is partial: 1 of 8 planned page(s) went unread (9 read).; Unread page \u2014 https://www.ramotion.com/pricing: http_error (status 404 at https://www.ramotion.com/pricing)",
+      "ok": true,
+      "page_urls": [
+        "https://www.ramotion.com/",
+        "https://www.ramotion.com/about/",
+        "https://www.ramotion.com/blog/",
+        "https://www.ramotion.com/brand/team-extension/",
+        "https://www.ramotion.com/contact/",
+        "https://www.ramotion.com/services/",
+        "https://www.ramotion.com/work/",
+        "https://www.ramotion.com/work/ai/",
+        "https://www.ramotion.com/work/b2b/"
+      ],
+      "pages": 9,
+      "seconds": 15.7,
+      "site": "https://www.ramotion.com",
+      "summary": "First-party research for www.ramotion.com: read 9 page(s) from www.ramotion.com \u2014 Digital Product Firm - Design Agency | Ramotion <https://www.ramotion.com/>; About Ramotion - Capabilities, Values, Leadership <https://www.ramotion.com/about/>; Ramotion Blog | Branding, Web Design & UX Design Insights <https://www.ramotion.com/blog/>; Brand Team Extension Program | Ramotion <https://www.ramotion.co",
+      "verified_facts": 24,
+      "with_citation": 25
+    },
+    {
+      "categories": {
+        "business_model": 7,
+        "client_roster": 6,
+        "growth_signals": 2,
+        "other": 1,
+        "pricing_rates": 1,
+        "scoping_maturity": 5,
+        "team_structure": 3,
+        "technology_stack": 1
+      },
+      "confidence": "medium",
+      "findings": 26,
+      "gaps": "Open question: No team size is stated on the 8 page(s) read; headcount stays unmeasured.; Open question: No page states who owns the backend, database or hosting across the 8 page(s) read; engineering ownership is unverified.; This run is partial: 2 of 10 planned page(s) went unread (8 read).; Unread page \u2014 https://www.hellomonday.com/contact: http_error (status 404 at https://www.hellomonday.com/contact); Unread page \u2014 https://www.hellomonday.com/team: http_error (status 404 at https://www.hell",
+      "ok": true,
+      "page_urls": [
+        "https://www.hellomonday.com/",
+        "https://www.hellomonday.com/about",
+        "https://www.hellomonday.com/services",
+        "https://www.hellomonday.com/work",
+        "https://www.hellomonday.com/work/lyft",
+        "https://www.hellomonday.com/work/nex",
+        "https://www.hellomonday.com/work/nomo",
+        "https://www.hellomonday.com/work/oppo"
+      ],
+      "pages": 8,
+      "seconds": 19.5,
+      "site": "https://www.hellomonday.com",
+      "summary": "First-party research for www.hellomonday.com: read 8 page(s) from www.hellomonday.com \u2014 Hello Monday <https://www.hellomonday.com/>; Hello Monday | About <https://www.hellomonday.com/about>; Hello Monday | Services <https://www.hellomonday.com/services>; Hello Monday | Work <https://www.hellomonday.com/work>; Hello Monday | Lyft - Cities Talk Back <https://www.hellomonday.com/work/lyft>; Hello Mon",
+      "verified_facts": 22,
+      "with_citation": 26
+    },
+    {
+      "categories": {
+        "business_model": 8,
+        "pricing_rates": 1,
+        "team_structure": 1,
+        "technology_stack": 1
+      },
+      "confidence": "medium",
+      "findings": 11,
+      "gaps": "Open question: No published price, rate or retainer figure appears on the 5 page(s) read; pricing_rates stays unmeasured.; Open question: No team size is stated on the 5 page(s) read; headcount stays unmeasured.; Open question: No page states who owns the backend, database or hosting across the 5 page(s) read; engineering ownership is unverified.; This run is partial: 3 of 8 planned page(s) went unread (5 read).; Unread page \u2014 https://www.bluegg.co.uk/pricing: http_error (status 404 at https://b",
+      "ok": true,
+      "page_urls": [
+        "https://toward.studio",
+        "https://toward.studio/contact",
+        "https://toward.studio/culture",
+        "https://toward.studio/latest",
+        "https://toward.studio/work"
+      ],
+      "pages": 5,
+      "seconds": 20.2,
+      "site": "https://www.bluegg.co.uk",
+      "summary": "First-party research for www.bluegg.co.uk: read 5 page(s) from www.bluegg.co.uk \u2014 Strategic Branding and Web Design Agency | Toward <https://toward.studio>; Talk to us about a project | Toward <https://toward.studio/contact>; The Toward people, place and culture | Toward <https://toward.studio/culture>; Branding, web design and culture articles | Toward <https://toward.studio/latest>; Branding, we",
+      "verified_facts": 8,
+      "with_citation": 11
+    }
+  ]
+}

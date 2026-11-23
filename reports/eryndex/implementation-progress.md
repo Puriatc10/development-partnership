@@ -26,7 +26,7 @@
 |---|---|---|
 | Branch / HEAD | `main` @ `447dc94` | `git rev-parse HEAD` |
 | Tracked files | 154 | `git ls-files \| wc -l` |
-| Full suite | **673 collected / 673 passed / 0 skipped / 0 failed** | `pytest`; `tests/db` includes 12 regression cases for the guard-semantics defect a probe, not a test, first found |
+| Full suite | **838 collected / 838 passed / 0 skipped / 0 failed** | `pytest`; includes the research engine (129 tests), the guard-semantics cases (12) and the manual-send path |
 | Skipped | all six in `tests/db/`, `ERYNDEX_DB_URL` unset | `tests/db/test_security_fixes_db.py:31-33` |
 | Python LOC | 13,647 | `wc -l` over the eight packages |
 | Database | **self-hosted PostgreSQL 17.11** in compose (`eryndex-postgres`, 127.0.0.1:5433) | ADR-0007; `reports/eryndex/migration-to-postgres-execution.md` |
@@ -73,12 +73,12 @@
 
 | ID | Item | Owner | Status | Grade | Evidence / blocker |
 |---|---|---|---|---|---|
-| D1 | Crawl4AI live run | Integration | BLOCKED | — | `endpoint_verified=False` (`integrations/crawl4ai/adapter.py:165`) — `OW-4` |
+| D1 | Crawl4AI live run | Integration | DEFERRED | — | not needed: the platform researches with its own fetcher (`research/http.py`); the vendor adapter stays unverified and unused |
 | D2 | Research executor (company → findings → rows) | Research | **COMPLETED** | live | `research/executor.py` + `scripts/research_run.py`; live run persisted 9 findings and completed the task (`reports/eryndex/evidence/e2e-lifecycle.json`) |
-| D3 | GPT Researcher live path | Research | BLOCKED | — | no LLM/search credentials — `OW-5` |
+| D3 | GPT Researcher live path | Research | DEFERRED | — | superseded by the first-party engine; a model-based reader can be added behind the same `ResearchProvider` contract |
 | D4 | OpenGTM decision | Orchestrator | BLOCKED | — | AGPL-3.0, no documented discovery route — `OW-3` |
 | D5 | Adapter contract compliance (3 adapters) | Integration | COMPLETED | contract | `test_provider_contract.py`, `test_crawl4ai_adapter_contract.py` |
-| D6 | Any provider executed live | Integration | NOT_STARTED | — | `reports/eryndex/integration-verification.md:6` |
+| D6 | Any provider executed live | Integration | **COMPLETED** | live | `FirstPartyResearchProvider`: 9 pages / 25 findings on ramotion.com, 8/26 hellomonday, 5/11 bluegg — `reports/eryndex/evidence/research-live.json` |
 
 ## WS-E — Evidence and intelligence
 

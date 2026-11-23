@@ -26,9 +26,16 @@ and this attempt joins that trace: it gets its own ``run_id`` (so "which run" st
 unambiguous) and shares the ``trace_id`` (so "which work" does not).
 
     python scripts/research_run.py --company-id <uuid> --provider fixture --task-id <uuid>
+    python scripts/research_run.py --company-id <uuid> --provider firstparty --task-id <uuid>
     python scripts/research_run.py --company-id <uuid> --dsn "$ERYNDEX_DB_URL" \\
         --identity hermes-researcher-v1 --task-id <uuid>
     python scripts/research_run.py --company-id <uuid> --task-id <uuid> --run-id <first run_id>
+
+``--provider firstparty`` reads the company's own site. Its page budget, user agent and
+timeouts come from ``RESEARCH_MAX_PAGES`` / ``RESEARCH_USER_AGENT`` / ``RESEARCH_TIMEOUT_S`` /
+``RESEARCH_DELAY_S`` (see ``research/firstparty.py``), and the output carries
+``research_source``: how many pages were read, which failed and why. A partial crawl is reported
+as partial — this script never prints a green result for a run that read nothing.
 """
 
 from __future__ import annotations
@@ -39,6 +46,7 @@ import logging
 import os
 import sys
 import uuid
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 
@@ -58,6 +66,7 @@ from research.executor import (  # noqa: E402
     execute_research,
     provider_from_integration,
 )
+from research.firstparty import FirstPartyResearchProvider  # noqa: E402
 
 DEFAULT_AGENT_IDENTITY = "hermes-researcher-v1"
 DEFAULT_RESEARCHER_URL = "http://127.0.0.1:8000"
@@ -68,10 +77,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--company-id", required=True, help="companies.id to research")
     parser.add_argument(
         "--provider",
-        choices=("fixture", "gpt_researcher"),
+        choices=("fixture", "firstparty", "gpt_researcher"),
         default="fixture",
-        help="fixture writes a clearly-labelled synthetic payload; gpt_researcher calls the "
-        "self-hosted adapter (needs --base-url)",
+        help="fixture writes a clearly-labelled synthetic payload; firstparty reads the "
+        "company's own site (no vendor, no key, env RESEARCH_MAX_PAGES etc.); gpt_researcher "
+        "calls the self-hosted adapter (needs --base-url)",
     )
     parser.add_argument("--task-id", default=None, help="tasks.id to move pending -> in_progress -> completed")
     parser.add_argument("--report-version", type=int, default=None, help="pin the report version")
@@ -128,7 +138,60 @@ def configure_logging() -> None:
 def build_provider(args: argparse.Namespace):
     if args.provider == "fixture":
         return FixtureResearchProvider()
+    if args.provider == "firstparty":
+        # Construction only reads RESEARCH_* variables; the network is touched inside produce().
+        return FirstPartyResearchProvider.from_env()
     return provider_from_integration("gpt_researcher", base_url=args.base_url, api_token=args.api_token)
+
+
+def provider_run_summary(provider: object) -> dict | None:
+    """How the last provider run went: pages read, pages failed, why — or ``None``.
+
+    The payload says what was concluded; this says how much evidence it rests on. It is read
+    from the provider after the fact rather than threaded through ``execute_research``, because
+    the executor's contract (payload in, persisted research out) must not grow a statistics
+    channel for one provider's benefit. Duck-typed on ``last_run`` so every other provider —
+    fixture, integration — simply reports nothing.
+    """
+    stats = getattr(provider, "last_run", None)
+    as_dict = getattr(stats, "as_dict", None)
+    if not callable(as_dict):
+        return None
+    try:
+        summary = as_dict()
+    except (TypeError, ValueError):  # a provider's private shape is not our contract
+        return None
+    return dict(summary) if isinstance(summary, Mapping) else None
+
+
+def record_source_stats(payload: dict, run: RunContext, provider: object) -> dict:
+    """Put the page count and failures into both the payload and the run summary.
+
+    Counted as an event as well as attached to the JSON because the summary's ``counts`` are
+    summed from events: a caller that only kept the log would otherwise not know a run read
+    three pages and failed five.
+    """
+    stats = provider_run_summary(provider)
+    if stats is None:
+        return payload
+    payload["research_source"] = stats
+    run.structured_event(
+        "research.pages.read",
+        stage="research",
+        counts={
+            "pages_read": _as_int(stats.get("pages_read")),
+            "pages_failed": _as_int(stats.get("pages_failed")),
+        },
+        start_url=stats.get("start_url"),
+        partial=bool(stats.get("partial")),
+        failure_reasons=list(stats.get("failures") or ()),
+    )
+    return payload
+
+
+def _as_int(value: object) -> int:
+    """``counts`` must stay integers; anything else is reported as zero rather than coerced."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 def build_claims(identity: str, role: str, subagent_type: str) -> dict:
@@ -211,6 +274,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         provider = build_provider(args)
+    except ImportError as exc:
+        # A provider whose sibling module is missing is a packaging problem, and it must read
+        # like one: a JSON error, not a traceback from inside a research run.
+        _emit(_fail(run, exc, stage="provider"))
+        return 2
     except (ResearchError, ValueError) as exc:
         _emit(_fail(run, exc, stage="provider"))
         return 2
@@ -254,6 +322,7 @@ def main(argv: list[str] | None = None) -> int:
         payload = result.to_dict()
         payload["database"] = config.database
         payload["environment"] = config.env
+        record_source_stats(payload, run, provider)
         _emit(_with_run(payload, run))
         return 0
     except ResearchError as exc:
